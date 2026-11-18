@@ -1,5 +1,7 @@
 # Zigmap
 
+[![CI](https://github.com/mcaney006/ZigMap/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mcaney006/ZigMap/actions/workflows/ci.yml)
+
 A network scanner written entirely in Zig 0.17.1. No C, no libpcap, no
 `@cImport`. Linux builds are static and do not link libc.
 
