@@ -1,0 +1,59 @@
+zigmap-probes 1
+# Original Zigmap service probe file. Format version 1.
+#
+# probe <name> <tcp|udp> ports=<list|*> wait=<ms> cap=<bytes> rarity=<1-9> [handler=<tls|dns-tcp>]
+# send "<payload>"                      escapes: \r \n \t \\ \" \xHH
+# match <service> probe=<name|*> <test>="<literal>" [<test>="<literal>"...]
+#       [product="<fixed>"] [capture="<after>" stop="<chars>" split="<chars>" as=<product-version|version|product>]
+#       confidence=<high|medium|low>
+# Tests: prefix, contains, not-contains. All tests must hold. First match wins.
+# A capture takes the text after the first occurrence of <after>, up to any
+# <stop> char (max 64 bytes); as=product-version splits it at the first
+# <split> char. Unknown stays unknown.
+
+probe NULL tcp ports=* wait=2500 cap=2048 rarity=1
+send ""
+
+probe HTTPGet tcp ports=80,81,3000,5000,8000,8008,8080,8081,8888,9000 wait=4000 cap=8192 rarity=2
+send "GET / HTTP/1.0\r\nUser-Agent: zigmap/0.2\r\nAccept: */*\r\n\r\n"
+
+probe TLSHello tcp ports=443,465,636,853,993,995,8443,9443 wait=4000 cap=16384 rarity=2 handler=tls
+send ""
+
+probe DNSVersionBind tcp ports=53 wait=3000 cap=1024 rarity=3 handler=dns-tcp
+send ""
+
+# --- SSH (banner arrives unprompted)
+match ssh probe=NULL prefix="SSH-2.0-OpenSSH_" capture="SSH-2.0-" stop=" \r\n" split="_" as=product-version confidence=high
+match ssh probe=NULL prefix="SSH-2.0-dropbear" capture="SSH-2.0-" stop=" \r\n" split="_" as=product-version confidence=high
+match ssh probe=NULL prefix="SSH-2.0-" capture="SSH-2.0-" stop=" \r\n" split="_" as=product-version confidence=medium
+match ssh probe=NULL prefix="SSH-1." confidence=medium
+
+# --- FTP
+match ftp probe=NULL prefix="220" contains="vsFTPd" product="vsftpd" capture="vsFTPd " stop=")\r\n " as=version confidence=high
+match ftp probe=NULL prefix="220" contains="ProFTPD" product="ProFTPD" capture="ProFTPD " stop=" \r\n" as=version confidence=high
+match ftp probe=NULL prefix="220" contains="Pure-FTPd" product="Pure-FTPd" confidence=high
+match ftp probe=NULL prefix="220" contains="FTP" not-contains="SMTP" confidence=medium
+
+# --- SMTP
+match smtp probe=NULL prefix="220" contains="Postfix" product="Postfix" confidence=high
+match smtp probe=NULL prefix="220" contains="Exim" product="Exim" capture="Exim " stop=" \r\n" as=version confidence=high
+match smtp probe=NULL prefix="220" contains="ESMTP" confidence=medium
+match smtp probe=NULL prefix="220" contains="SMTP" confidence=medium
+
+# --- POP3 / IMAP
+match pop3 probe=NULL prefix="+OK" confidence=medium
+match imap probe=NULL prefix="* OK" contains="IMAP" confidence=medium
+
+# --- MySQL greeting: protocol 10, then a NUL-terminated version string
+match mysql probe=NULL contains="\x0a" contains="mysql_native_password" capture="\x0a" stop="\x00" as=version product="MySQL" confidence=medium
+
+# --- Redis answers inline commands with -ERR or +PONG; a bare banner is rare
+match redis probe=NULL prefix="-NOAUTH" confidence=medium
+
+# --- HTTP (Server header)
+match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: nginx" capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=high
+match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: Apache" capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=high
+match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: " capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=medium
+match http probe=HTTPGet prefix="HTTP/1." confidence=medium
+match http probe=HTTPGet prefix="HTTP/2" confidence=low
