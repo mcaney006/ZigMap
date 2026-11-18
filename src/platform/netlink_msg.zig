@@ -14,13 +14,10 @@ pub const NLMSG_ERROR: u16 = 2;
 pub const NLMSG_DONE: u16 = 3;
 pub const NLM_F_REQUEST: u16 = 0x01;
 pub const NLM_F_MULTI: u16 = 0x02;
-pub const NLM_F_ACK: u16 = 0x04;
 pub const NLM_F_DUMP: u16 = 0x300;
 
 pub const RTM_NEWLINK: u16 = 16;
 pub const RTM_GETLINK: u16 = 18;
-pub const RTM_NEWADDR: u16 = 20;
-pub const RTM_GETADDR: u16 = 22;
 pub const RTM_NEWROUTE: u16 = 24;
 pub const RTM_GETROUTE: u16 = 26;
 pub const RTM_NEWNEIGH: u16 = 28;
@@ -30,7 +27,6 @@ pub const RTA_DST: u16 = 1;
 pub const RTA_OIF: u16 = 4;
 pub const RTA_GATEWAY: u16 = 5;
 pub const RTA_PREFSRC: u16 = 7;
-pub const RTA_TABLE: u16 = 15;
 
 pub const IFLA_ADDRESS: u16 = 1;
 pub const IFLA_IFNAME: u16 = 3;
@@ -44,7 +40,6 @@ pub const ARPHRD_LOOPBACK: u16 = 772;
 
 pub const AF_INET: u8 = 2;
 pub const AF_INET6: u8 = 10;
-pub const AF_UNSPEC: u8 = 0;
 
 pub const Nud = struct {
     pub const incomplete: u16 = 0x01;
@@ -128,14 +123,6 @@ pub fn buildLinkGet(buf: []u8, seq: u32, ifindex: i32) error{NoSpace}![]const u8
     try b.header(RTM_GETLINK, NLM_F_REQUEST, seq);
     var ifi: [ifinfomsg_len]u8 = @splat(0);
     std.mem.writeInt(i32, ifi[4..8], ifindex, native);
-    try b.put(&ifi);
-    return b.finish();
-}
-
-pub fn buildLinkDump(buf: []u8, seq: u32) error{NoSpace}![]const u8 {
-    var b: Builder = .{ .buf = buf };
-    try b.header(RTM_GETLINK, NLM_F_REQUEST | NLM_F_DUMP, seq);
-    const ifi: [ifinfomsg_len]u8 = @splat(0);
     try b.put(&ifi);
     return b.finish();
 }

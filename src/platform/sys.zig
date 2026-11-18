@@ -34,26 +34,8 @@ pub const Err = enum {
     other,
 };
 
-fn mapLinux(e: linux.E) Err {
-    return switch (e) {
-        .SUCCESS => .ok,
-        .INPROGRESS => .in_progress,
-        .INTR => .interrupted,
-        .AGAIN => .would_block,
-        .CONNREFUSED => .conn_refused,
-        .TIMEDOUT => .timed_out,
-        .HOSTUNREACH, .HOSTDOWN => .host_unreach,
-        .NETUNREACH, .NETDOWN => .net_unreach,
-        .ACCES, .PERM => .access,
-        .MFILE, .NFILE => .no_fds,
-        .NOBUFS, .NOMEM => .no_bufs,
-        .ADDRNOTAVAIL => .addr_not_avail,
-        .AFNOSUPPORT => .af_not_supported,
-        else => .other,
-    };
-}
-
-fn mapC(e: c.E) Err {
+/// Linux and libSystem errno enums share these tag names.
+fn mapErrno(e: anytype) Err {
     return switch (e) {
         .SUCCESS => .ok,
         .INPROGRESS => .in_progress,
@@ -73,8 +55,8 @@ fn mapC(e: c.E) Err {
 }
 
 fn errFromCode(code: i32) Err {
-    if (is_linux) return mapLinux(@enumFromInt(code));
-    return mapC(@enumFromInt(code));
+    if (is_linux) return mapErrno(@as(linux.E, @enumFromInt(code)));
+    return mapErrno(@as(c.E, @enumFromInt(code)));
 }
 
 pub fn SysResult(comptime T: type) type {
@@ -87,12 +69,12 @@ pub fn tcpSocket(v6: bool) SysResult(fd_t) {
         const af: u32 = if (v6) linux.AF.INET6 else linux.AF.INET;
         const rc = linux.socket(af, linux.SOCK.STREAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
         const e = linux.errno(rc);
-        if (e != .SUCCESS) return .{ .err = mapLinux(e) };
+        if (e != .SUCCESS) return .{ .err = mapErrno(e) };
         return .{ .ok = @intCast(rc) };
     }
     const af: c_uint = if (v6) c.AF.INET6 else c.AF.INET;
     const fd = c.socket(af, c.SOCK.STREAM, 0);
-    if (fd < 0) return .{ .err = mapC(c.errno(fd)) };
+    if (fd < 0) return .{ .err = mapErrno(c.errno(fd)) };
     const fl = c.fcntl(fd, c.F.GETFL, @as(c_int, 0));
     _ = c.fcntl(fd, c.F.SETFL, fl | @as(c_int, @bitCast(c.O{ .NONBLOCK = true })));
     _ = c.fcntl(fd, c.F.SETFD, @as(c_int, c.FD_CLOEXEC));
@@ -108,17 +90,17 @@ pub fn connect(fd: fd_t, addr: Addr, port: u16) Err {
         const e: Err = if (is_linux) blk: {
             if (addr.is_v6) {
                 var sa: linux.sockaddr.in6 = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = addr.bytes, .scope_id = 0 };
-                break :blk mapLinux(linux.errno(linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in6))));
+                break :blk mapErrno(linux.errno(linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in6))));
             }
             var sa: linux.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, port), .addr = @bitCast(addr.bytes4()) };
-            break :blk mapLinux(linux.errno(linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in))));
+            break :blk mapErrno(linux.errno(linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in))));
         } else blk: {
             if (addr.is_v6) {
                 var sa: c.sockaddr.in6 = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = addr.bytes, .scope_id = 0 };
-                break :blk mapC(c.errno(c.connect(fd, @ptrCast(&sa), @sizeOf(c.sockaddr.in6))));
+                break :blk mapErrno(c.errno(c.connect(fd, @ptrCast(&sa), @sizeOf(c.sockaddr.in6))));
             }
             var sa: c.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, port), .addr = @bitCast(addr.bytes4()) };
-            break :blk mapC(c.errno(c.connect(fd, @ptrCast(&sa), @sizeOf(c.sockaddr.in))));
+            break :blk mapErrno(c.errno(c.connect(fd, @ptrCast(&sa), @sizeOf(c.sockaddr.in))));
         };
         if (e != .interrupted) return e;
     }
@@ -208,14 +190,11 @@ const EpollPoller = struct {
     pub fn wait(p: *EpollPoller, timeout_ms: i32, out: []Ready) usize {
         var evs: [256]linux.epoll_event = undefined;
         const max: u32 = @intCast(@min(evs.len, out.len));
-        while (true) {
-            const rc = linux.epoll_wait(p.epfd, &evs, max, timeout_ms);
-            const e = linux.errno(rc);
-            if (e == .INTR) return 0;
-            if (e != .SUCCESS) return 0;
-            for (evs[0..rc], 0..) |ev, i| out[i] = .{ .token = ev.data.u64 };
-            return rc;
-        }
+        const rc = linux.epoll_wait(p.epfd, &evs, max, timeout_ms);
+        // EINTR and other failures report no events; the engine polls again.
+        if (linux.errno(rc) != .SUCCESS) return 0;
+        for (evs[0..rc], 0..) |ev, i| out[i] = .{ .token = ev.data.u64 };
+        return rc;
     }
 };
 
@@ -295,7 +274,7 @@ pub fn recvSome(fd: fd_t, buf: []u8) IoResult {
                 .SUCCESS => return if (rc == 0) .eof else .{ .n = rc },
                 .INTR => continue,
                 .AGAIN => return .would_block,
-                else => |e| return .{ .err = mapLinux(e) },
+                else => |e| return .{ .err = mapErrno(e) },
             }
         } else {
             const rc = c.recv(fd, buf.ptr, buf.len, 0);
@@ -304,7 +283,7 @@ pub fn recvSome(fd: fd_t, buf: []u8) IoResult {
             switch (c.errno(rc)) {
                 .INTR => continue,
                 .AGAIN => return .would_block,
-                else => |e| return .{ .err = mapC(e) },
+                else => |e| return .{ .err = mapErrno(e) },
             }
         }
     }
@@ -318,7 +297,7 @@ pub fn sendSome(fd: fd_t, data: []const u8) IoResult {
                 .SUCCESS => return .{ .n = rc },
                 .INTR => continue,
                 .AGAIN => return .would_block,
-                else => |e| return .{ .err = mapLinux(e) },
+                else => |e| return .{ .err = mapErrno(e) },
             }
         } else {
             const rc = c.send(fd, data.ptr, data.len, 0);
@@ -326,7 +305,7 @@ pub fn sendSome(fd: fd_t, data: []const u8) IoResult {
             switch (c.errno(rc)) {
                 .INTR => continue,
                 .AGAIN => return .would_block,
-                else => |e| return .{ .err = mapC(e) },
+                else => |e| return .{ .err = mapErrno(e) },
             }
         }
     }

@@ -134,7 +134,7 @@ pub const Decoded = struct {
 };
 
 /// Decodes the fixed header and data offset. Only the first 8 bytes are
-/// needed for ICMP correlation; use `decodePorts` for that case.
+/// needed for ICMP correlation; use `decodeQuoted` for that case.
 pub fn decode(bytes: []const u8) DecodeError!Decoded {
     if (bytes.len < header_min_len) return error.Truncated;
     const data_off: usize = (bytes[12] >> 4) * 4;
@@ -178,7 +178,7 @@ pub const SynOptions = struct {
 };
 
 /// Encodes options in a common, well-formed ordering. Returns bytes written,
-/// padded to a multiple of 4 with NOP/EOL.
+/// padded to a multiple of 4 with EOL.
 pub fn encodeOptions(o: SynOptions, out: []u8) error{BufferTooSmall}!usize {
     var tmp: [40]u8 = undefined;
     var n: usize = 0;
@@ -239,7 +239,7 @@ pub fn encode(h: Header, options: []const u8, payload: []const u8, pseudo: u32, 
 
 /// Verifies a TCP segment checksum given the pseudo-header partial sum.
 pub fn verify(segment: []const u8, pseudo: u32) bool {
-    return checksum.finish(checksum.add(pseudo, segment)) == 0;
+    return checksum.verifyWithPseudo(pseudo, segment);
 }
 
 const testing = std.testing;

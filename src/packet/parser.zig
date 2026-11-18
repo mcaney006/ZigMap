@@ -78,9 +78,6 @@ pub const Packet = struct {
     pub fn src4(p: *const Packet) [4]u8 {
         return p.src[0..4].*;
     }
-    pub fn dst4(p: *const Packet) [4]u8 {
-        return p.dst[0..4].*;
-    }
 };
 
 pub const ParseError = error{
@@ -237,6 +234,16 @@ fn parseL4(p: *Packet, proto: u8, seg: []const u8, pseudo: u32, can_verify: bool
     }
 }
 
+/// `field_off` is the checksum field offset inside `seg`.
+fn classify(seg: []const u8, field_off: usize, pseudo: u32, can_verify: bool) ChecksumStatus {
+    if (!can_verify or seg.len < field_off + 2) return .unverified;
+    if (checksum.verifyWithPseudo(pseudo, seg)) return .good;
+    const stored = std.mem.readInt(u16, seg[field_off..][0..2], .big);
+    // Offloaded segments carry the folded (uncomplemented) pseudo-header sum.
+    if (pseudo != 0 and stored == ~checksum.finish(pseudo)) return .partial;
+    return .bad;
+}
+
 test "parser never panics on arbitrary input" {
     try std.testing.fuzz({}, fuzzOne, .{});
 }
@@ -248,14 +255,4 @@ fn fuzzOne(_: void, smith: *std.testing.Smith) !void {
     inline for (.{ LinkType.ethernet, LinkType.raw_ip, LinkType.linux_sll, LinkType.bsd_null }) |lt| {
         _ = parse(lt, buf[0..len]) catch {};
     }
-}
-
-/// `field_off` is the checksum field offset inside `seg`.
-fn classify(seg: []const u8, field_off: usize, pseudo: u32, can_verify: bool) ChecksumStatus {
-    if (!can_verify or seg.len < field_off + 2) return .unverified;
-    if (checksum.finish(checksum.add(pseudo, seg)) == 0) return .good;
-    const stored = std.mem.readInt(u16, seg[field_off..][0..2], .big);
-    // Offloaded segments carry the folded (uncomplemented) pseudo-header sum.
-    if (pseudo != 0 and stored == ~checksum.finish(pseudo)) return .partial;
-    return .bad;
 }

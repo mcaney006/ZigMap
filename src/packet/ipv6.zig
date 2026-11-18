@@ -1,6 +1,7 @@
 //! IPv6 fixed header encoder/decoder and bounded extension-header walk
-//! (RFC 8200). The walk stops at the first upper-layer protocol, at ESP
-//! (payload is opaque), at No-Next-Header, or after `max_ext_headers`.
+//! (RFC 8200). The walk stops at an upper-layer protocol, at ESP or an
+//! unknown header (opaque payload), at No-Next-Header, or at a non-first
+//! fragment, and fails with `TooManyExtensions` past `max_ext_headers`.
 
 const std = @import("std");
 
@@ -113,19 +114,15 @@ pub fn decode(bytes: []const u8, opts: DecodeOptions) DecodeError!Decoded {
                 .more = fo & 1 != 0,
                 .id = std.mem.readInt(u32, body[off + 4 ..][0..4], .big),
             };
-            off += ext_len;
-            nh = next;
-            if (frag.?.offset != 0) {
-                return .{ .header = h, .upper_protocol = nh, .upper = body[off..], .stop = .non_first_fragment, .fragment = frag, .ext_count = count, .truncated = truncated };
-            }
-            continue;
         }
         off += ext_len;
         nh = next;
+        if (frag) |f| if (f.offset != 0) {
+            return .{ .header = h, .upper_protocol = nh, .upper = body[off..], .stop = .non_first_fragment, .fragment = frag, .ext_count = count, .truncated = truncated };
+        };
     }
     const stop: WalkStop = switch (nh) {
         NextHeader.no_next => .no_next_header,
-        NextHeader.esp => .opaque_payload,
         NextHeader.tcp, NextHeader.udp, NextHeader.icmpv6 => .upper_layer,
         else => .opaque_payload,
     };
