@@ -1,10 +1,12 @@
 //! Probe slots and their explicit state machine.
 //!
-//!   ready -> sent -> awaiting -> classified -------------------> completed
-//!                                   |-> (inconclusive) retry_queued
-//!                       |-> timed_out -> retry_queued -> ready (next attempt)
-//!                       |-> timed_out -----------------------------> completed
-//!   any non-terminal ---------------------------------------------> canceled
+//!   free -> ready -> sent -> awaiting -> classified -> completed -> free
+//!                    sent -> classified                (answer known at send time)
+//!            ready -> retry_queued                     (send deferred by local pressure)
+//!                    awaiting -> timed_out -> retry_queued -> ready
+//!                              timed_out -> completed  (attempts exhausted)
+//!                              classified -> retry_queued  (inconclusive)
+//!   ready, awaiting, retry_queued -> canceled -> free
 //!
 //! A slot's `generation` increments every time it is (re)armed. Transports
 //! echo the generation back with every reply, so a late reply to an older
@@ -29,7 +31,7 @@ pub fn canTransition(from: State, to: State) bool {
     return switch (from) {
         .free => to == .ready,
         .ready => to == .sent or to == .canceled or to == .retry_queued,
-        .sent => to == .awaiting or to == .classified or to == .canceled or to == .retry_queued,
+        .sent => to == .awaiting or to == .classified,
         .awaiting => to == .classified or to == .timed_out or to == .canceled,
         // An inconclusive classification may be retried.
         .classified => to == .completed or to == .retry_queued,
@@ -47,6 +49,8 @@ pub const Probe = struct {
     port_index: u32 = 0,
     port: u16 = 0,
     attempt: u8 = 0,
+    /// Attempts that ended in a timeout; a later reply is then evidence of loss.
+    timeouts: u8 = 0,
     generation: u32 = 0,
     sent_ns: u64 = 0,
     /// Intrusive link for the free list and per-host retry FIFOs.
@@ -62,7 +66,6 @@ pub const Probe = struct {
 pub const Pool = struct {
     slots: []Probe,
     free_head: u32,
-    used: u32 = 0,
 
     pub fn init(gpa: std.mem.Allocator, capacity: u32) !Pool {
         const slots = try gpa.alloc(Probe, capacity);
@@ -83,7 +86,6 @@ pub const Pool = struct {
         const gen = s.generation;
         s.* = .{ .generation = gen };
         s.to(.ready);
-        p.used += 1;
         return id;
     }
 
@@ -94,7 +96,6 @@ pub const Pool = struct {
         s.generation +%= 1;
         s.next = p.free_head;
         p.free_head = id;
-        p.used -= 1;
     }
 };
 

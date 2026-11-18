@@ -1,5 +1,6 @@
 //! Retransmission-timeout estimation following RFC 6298 (SRTT/RTTVAR/RTO)
-//! with configurable clamps and exponential backoff.
+//! with configurable clamps. Per-attempt backoff is applied by the engine
+//! (`rto << (attempt - 1)`), so silence never inflates the estimator.
 //!
 //! Sampling rule (Karn): only feed samples whose send time is unambiguous.
 //! Zigmap gives every retry its own socket (connect scan) or its own
@@ -21,8 +22,6 @@ pub const Estimator = struct {
     srtt_ns: u64 = 0,
     rttvar_ns: u64 = 0,
     samples: u32 = 0,
-    /// Number of consecutive timeout doublings currently applied.
-    backoff_shift: u5 = 0,
 
     pub fn init(cfg: Config) Estimator {
         return .{ .cfg = cfg };
@@ -38,12 +37,6 @@ pub const Estimator = struct {
             e.srtt_ns = (7 * e.srtt_ns + rtt_ns) / 8;
         }
         e.samples +|= 1;
-        e.backoff_shift = 0;
-    }
-
-    /// Called when a probe timed out with no reply at all.
-    pub fn onTimeout(e: *Estimator) void {
-        if (e.backoff_shift < 6) e.backoff_shift += 1;
     }
 
     fn baseRto(e: *const Estimator) u64 {
@@ -52,9 +45,7 @@ pub const Estimator = struct {
     }
 
     pub fn rto(e: *const Estimator) u64 {
-        const b = std.math.clamp(e.baseRto(), e.cfg.min_rto_ns, e.cfg.max_rto_ns);
-        const backed = b *| (@as(u64, 1) << e.backoff_shift);
-        return @min(backed, e.cfg.max_rto_ns);
+        return std.math.clamp(e.baseRto(), e.cfg.min_rto_ns, e.cfg.max_rto_ns);
     }
 };
 
@@ -82,15 +73,4 @@ test "jitter widens RTO; clamps apply" {
     tiny.addSample(1 * ms);
     for (0..20) |_| tiny.addSample(1 * ms);
     try testing.expectEqual(@as(u64, 100 * ms), tiny.rto()); // min clamp
-}
-
-test "backoff doubles to max and resets on sample" {
-    var e = Estimator.init(.{});
-    e.addSample(400 * ms); // rto 1200
-    e.onTimeout();
-    try testing.expectEqual(@as(u64, 2400 * ms), e.rto());
-    for (0..10) |_| e.onTimeout();
-    try testing.expectEqual(@as(u64, 10_000 * ms), e.rto());
-    e.addSample(400 * ms);
-    try testing.expect(e.rto() < 2000 * ms);
 }

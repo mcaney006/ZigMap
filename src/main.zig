@@ -257,7 +257,7 @@ pub fn main(init: std.process.Init) !u8 {
 // ------------------------------------------------------------- connect
 
 fn runConnect(ctx: *Ctx, addrs: []const Addr) !u8 {
-    const slots = ctx.parallelism * 2 + 16;
+    const slots = engine_mod.poolCapacity(ctx.parallelism);
     var up: std.ArrayList(Addr) = .empty;
     var up_reason: std.ArrayList(ps.Reason) = .empty;
     var down: std.ArrayList(report.DownHost) = .empty;
@@ -486,7 +486,7 @@ fn runRaw(ctx: *Ctx, addrs: []const Addr) !u8 {
         return 2;
     };
     defer plan.deinit(ctx.gpa);
-    const slots = ctx.parallelism * 2 + 16;
+    const slots = engine_mod.poolCapacity(ctx.parallelism);
     try ctx.hw.print("Raw backend: interface {s} (ifindex {d}, {s}), capture {t}{s}, source ports {d}-{d}\n", .{
         plan.ifName(),
         plan.ifindex,

@@ -64,7 +64,6 @@ pub const Spec = struct {
 
     fn first(s: Spec) u128 {
         const host_bits = s.bits() - s.prefix;
-        if (host_bits == 0) return s.base.asInt();
         if (host_bits >= 128) return 0;
         const mask = ~((@as(u128, 1) << @intCast(host_bits)) - 1);
         return s.base.asInt() & mask;
@@ -153,7 +152,7 @@ pub fn parsePorts(gpa: std.mem.Allocator, text: []const u8) PortError![]u16 {
         if (part.len == 0) continue;
         var lo: u16 = 1;
         var hi: u16 = 65535;
-        if (std.mem.eql(u8, part, "-")) {} else if (std.mem.findScalar(u8, part, '-')) |d| {
+        if (std.mem.findScalar(u8, part, '-')) |d| {
             if (d > 0) lo = std.fmt.parseInt(u16, part[0..d], 10) catch return error.InvalidPortSpec;
             if (d + 1 < part.len) hi = std.fmt.parseInt(u16, part[d + 1 ..], 10) catch return error.InvalidPortSpec;
         } else {
