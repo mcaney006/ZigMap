@@ -8,7 +8,8 @@
 #   ZIGMAP_INSTALL_DIR  where to put the binary (default: /usr/local/bin if
 #                       you can write to it, otherwise ~/.local/bin)
 #   ZIGMAP_BASE_URL     download from this directory instead of the GitHub
-#                       release (a mirror, or file:// for testing)
+#                       release (a mirror, or file:// for testing; file://
+#                       needs curl)
 #
 # The download is checked against the release's SHA256SUMS before anything
 # is installed. This script never calls sudo; to install somewhere you
@@ -85,11 +86,14 @@ mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
 
 # Copy next to the destination, then rename, so a running zigmap is never
 # left half-written.
-cp "$tmp/zigmap" "$dir/.zigmap.new.$$"
-chmod 755 "$dir/.zigmap.new.$$"
-mv -f "$dir/.zigmap.new.$$" "$dir/zigmap"
+new="$dir/.zigmap.new.$$"
+trap 'rm -rf "$tmp" "$new"' EXIT
+cp "$tmp/zigmap" "$new"
+chmod 755 "$new"
+mv -f "$new" "$dir/zigmap"
 
-say "installed $("$dir/zigmap" --version) to $dir/zigmap"
+ver=$("$dir/zigmap" --version) || die "installed $dir/zigmap but it does not run on this system"
+say "installed $ver to $dir/zigmap"
 case ":$PATH:" in
 *":$dir:"*) ;;
 *) say "$dir is not on your PATH; add it, for example: export PATH=\"$dir:\$PATH\"" ;;

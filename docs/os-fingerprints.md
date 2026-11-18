@@ -45,9 +45,9 @@ that imply different initial TTLs.
 |---|---|---|---|---|---|---|---|
 | Linux 7.x (default TCP sysctls) | kernel 7.2.12, OrbStack VM, Alpine 3.20 container, default sysctls | MSS, SACK, TS, NOP, WS | 65160 | 10 | 64 | yes | window 0, DF |
 
-The reference was captured in this repository's lab: `tests/lab/syn_lab.sh`
-scans a container on a Docker bridge with `-sS -O --packet-trace`, and the
-SYN/ACK fields were read from that capture. An earlier guess of window
+The reference was captured in the bridge lab (`tests/lab/syn_lab.sh`): a
+manual `-sS -O --packet-trace` run against the lab's target container on a
+Docker bridge, with the SYN/ACK fields read from that trace. An earlier guess of window
 scale 7 was wrong; the capture showed 10, which follows from the
 receiver's memory sizing. Window scale therefore carries weight 1.
 

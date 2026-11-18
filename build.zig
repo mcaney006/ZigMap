@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench", "Run the timer-structure benchmark").dependOn(&b.addRunArtifact(bench).step);
 
-    // Static release binaries for the supported targets, written to
+    // Release binaries (static on Linux) for the supported targets, written to
     // zig-out/release/zigmap-<arch>-<os>. tests/release/reproducible.sh
     // builds them twice from empty caches and compares the hashes.
     const release = b.step("release", "Build ReleaseSafe binaries for every supported target");

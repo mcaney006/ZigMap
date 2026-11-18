@@ -6,7 +6,7 @@
 #   ARCH=aarch64|x86_64 (default aarch64)
 set -eu
 ARCH=${ARCH:-aarch64}
-case $ARCH in aarch64) PLATFORM=linux/arm64 ;; x86_64) PLATFORM=linux/amd64 ;; *) exit 2 ;; esac
+case $ARCH in aarch64) PLATFORM=linux/arm64 ;; x86_64) PLATFORM=linux/amd64 ;; *) echo "unknown ARCH $ARCH" >&2; exit 2 ;; esac
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 N=$(( $$ % 200 + 10 ))
 NET=zmlab-$$
@@ -25,6 +25,7 @@ cleanup() {
 	docker rm -f zm-target-$$ >/dev/null 2>&1 || true
 	docker network rm $NET >/dev/null 2>&1 || true
 	docker network rm $NETB >/dev/null 2>&1 || true
+	rm -f "${capout:-}"
 }
 trap cleanup EXIT
 V6=0
@@ -133,7 +134,7 @@ if [ "$V6" = 1 ]; then
   /zm/zigmap -sS -p 20000-20003 --max-retries 1 --initial-rtt-timeout 300 -oJ /tmp/v6.jsonl $T6 >/tmp/v6.txt 2>&1
   check "v6 20001" open/syn_ack "$(st /tmp/v6.jsonl 20001)"
   check "v6 20000" closed/rst "$(st /tmp/v6.jsonl 20000)"
-  hs /tmp/v6.jsonl $T6 | grep -q "completed/nd_reply\|completed/none" && echo "  ok   discovery: $(grep "\"type\":\"host\"" /tmp/v6.jsonl | sed -n "s/.*\"discovery\":\"\([^\"]*\)\".*/\1/p")" || true
+  if hs /tmp/v6.jsonl $T6 | grep -q "completed/nd_reply\|completed/none"; then echo "  ok   discovery: $(grep "\"type\":\"host\"" /tmp/v6.jsonl | sed -n "s/.*\"discovery\":\"\([^\"]*\)\".*/\1/p")"; else echo "  FAIL v6 discovery: $(hs /tmp/v6.jsonl $T6)"; fail=1; fi
 else
   echo "== IPv6: Docker IPv6 networks unavailable here; skipped"
 fi
@@ -154,11 +155,11 @@ rc=$?
 set -e
 
 echo "== missing CAP_NET_RAW"
+capout=$(mktemp)
 set +e
-docker run --rm --platform $PLATFORM --network $NET --cap-drop NET_RAW -v "$ROOT/zig-out/$ARCH-linux/bin:/zm:ro" alpine:3.20 /zm/zigmap -sS -p 22 $TARGET_IP >/tmp/zm-cap.$$ 2>&1
+docker run --rm --platform $PLATFORM --network $NET --cap-drop NET_RAW -v "$ROOT/zig-out/$ARCH-linux/bin:/zm:ro" alpine:3.20 /zm/zigmap -sS -p 22 $TARGET_IP >"$capout" 2>&1
 code=$?
 set -e
-if [ $code -eq 77 ] && grep -q CAP_NET_RAW /tmp/zm-cap.$$; then echo "  ok   exit 77 with explanation, no fallback"; else echo "  FAIL exit $code"; cat /tmp/zm-cap.$$; rc=1; fi
-rm -f /tmp/zm-cap.$$
+if [ $code -eq 77 ] && grep -q CAP_NET_RAW "$capout"; then echo "  ok   exit 77 with explanation, no fallback"; else echo "  FAIL exit $code"; cat "$capout"; rc=1; fi
 [ $rc -eq 0 ] && echo "RAW LAB PASS" || echo "RAW LAB FAIL"
 exit $rc

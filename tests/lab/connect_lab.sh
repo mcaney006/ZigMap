@@ -1,6 +1,6 @@
 #!/bin/sh
-# Isolated-namespace lab for the TCP connect scanner. Runs INSIDE a
-# throwaway container (see tests/lab/run.sh), touching only that
+# Isolated-namespace lab for the connect scanner and the raw SYN path. Runs
+# INSIDE a throwaway container (see tests/lab/run.sh), touching only that
 # container's loopback. Lab tooling (iptables, tc, labtool listeners, nmap
 # as a differential oracle) shapes the environment; it never performs the
 # scan under test.
@@ -49,7 +49,8 @@ fi
 echo "== scan 2: differential vs nmap -sT (oracle only)"
 nmap -sT -Pn -n -p $PORTS --max-retries 1 127.0.0.1 -oG - 2>/dev/null | tr ',' '\n' | sed -n 's#.* \{0,1\}\([0-9]\{5\}\)/\([a-z|]*\)/tcp.*#\1 \2#p' | sort >/tmp/nmap.txt
 grep '"type":"port"' /tmp/s1.jsonl | sed 's/.*"port":\([0-9]*\),.*"state":"\([^"]*\)".*/\1 \2/' | sort >/tmp/zm.txt
-# nmap -oG omits ports in the "Ignored State" bucket (closed); compare those it lists.
+# On larger scans nmap -oG folds closed ports into "Ignored State"; compare
+# the ports it lists, then the closed counts.
 dis=0
 while read -r port st; do
 	z=$(grep "^$port " /tmp/zm.txt | cut -d' ' -f2)
@@ -57,9 +58,9 @@ while read -r port st; do
 done </tmp/nmap.txt
 listed=$(wc -l </tmp/nmap.txt | tr -d ' ')
 if [ $dis -eq 0 ]; then echo "  ok   agrees with nmap on all $listed listed ports"; else fail=1; fi
-nmap_closed=$(grep -c " closed$" /tmp/nmap.txt)
-zm_closed=$(grep -c ' closed$' /tmp/zm.txt)
-check "closed count vs nmap" "${nmap_closed:-?}" "$zm_closed"
+nmap_closed=$(grep -c " closed$" /tmp/nmap.txt || true)
+zm_closed=$(grep -c ' closed$' /tmp/zm.txt || true)
+check "closed count vs nmap" "$nmap_closed" "$zm_closed"
 
 echo "== scan 3: IPv6 ::1"
 "$ZM" -p 20000-20010 --max-retries 1 --initial-rtt-timeout 300 -oJ /tmp/s3.jsonl ::1 >/dev/null
@@ -86,11 +87,15 @@ echo "== scan 5: rate cap 50 pps over 200 probes"
 start=$(date +%s)
 "$ZM" -p 21000-21199 --max-rate 50 127.0.0.1 >/dev/null
 el=$(( $(date +%s) - start ))
-if [ $el -ge 3 ]; then echo "  ok   200 probes at 50 pps took ${el}s (>= ~3.9s expected)"; else echo "  FAIL rate cap not honoured (${el}s)"; fail=1; fi
+if [ $el -ge 3 ]; then echo "  ok   200 probes at 50 pps took ${el}s (about 4 s expected; date +%s rounds down)"; else echo "  FAIL rate cap not honoured (${el}s)"; fail=1; fi
 
 echo "== scan 6: target expansion guard and exclusions"
 if "$ZM" -p 80 10.0.0.0/16 >/dev/null 2>/tmp/e6; then echo "  FAIL /16 accepted"; fail=1; else echo "  ok   refused: $(cat /tmp/e6)"; fi
-"$ZM" --dry-run -p 80 127.0.0.0/29 --exclude 127.0.0.0/30 | grep -q "127.0.0.4" && echo "  ok   dry run lists non-excluded targets, sends nothing"
+if "$ZM" --dry-run -p 80 127.0.0.0/29 --exclude 127.0.0.0/30 | grep -q "127.0.0.4"; then
+	echo "  ok   dry run lists non-excluded targets, sends nothing"
+else
+	echo "  FAIL dry run"; fail=1
+fi
 "$ZM" -sA 127.0.0.1 >/dev/null 2>&1 && { echo "  FAIL -sA accepted"; fail=1; } || echo "  ok   -sA rejected (not implemented; no silent connect substitution)"
 
 echo "== scan 7: raw SYN on loopback (L3 send, AF_PACKET capture) vs nmap -sS"

@@ -19,7 +19,6 @@ n=0
 for bin in "$REL"/zigmap-*; do
 	[ -f "$bin" ] || continue
 	name=$(basename "$bin")
-	rm -rf "${stage:?}/$name"
 	mkdir "$stage/$name"
 	cp "$bin" "$stage/$name/zigmap"
 	cp "$ROOT/README.md" "$stage/$name/README.md"

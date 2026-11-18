@@ -1,7 +1,8 @@
 #!/bin/sh
-# Capture-path benchmark: recvmsg vs TPACKET_V3 ring vs ring + BPF, for a
-# full 65535-port SYN scan of 127.0.0.1 in a throwaway container while two
-# processes flood loopback with UDP that is NOT addressed to 127.0.0.1.
+# Capture-path benchmark: recvmsg vs TPACKET_V3 ring, each with and without
+# the BPF filter, for a full 65535-port SYN scan of 127.0.0.1 in a throwaway
+# container while two processes flood loopback with UDP that is NOT
+# addressed to 127.0.0.1.
 # Reports medians of RUNS runs: wall and CPU time, ports classified per
 # second, p50/p95/p99 port completion time, peak RSS, frames read, drops.
 # Loopback only: says nothing about NICs.
@@ -9,7 +10,7 @@
 set -eu
 ARCH=${ARCH:-aarch64}
 RUNS=${RUNS:-5}
-case $ARCH in aarch64) PLATFORM=linux/arm64 ;; x86_64) PLATFORM=linux/amd64 ;; *) exit 2 ;; esac
+case $ARCH in aarch64) PLATFORM=linux/arm64 ;; x86_64) PLATFORM=linux/amd64 ;; *) echo "unknown ARCH $ARCH" >&2; exit 2 ;; esac
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 zig build install lab-tools -Dtarget=$ARCH-linux -Doptimize=ReleaseFast --prefix "zig-out/$ARCH-linux-fast"
