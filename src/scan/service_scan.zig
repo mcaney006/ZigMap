@@ -162,10 +162,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, db: *const svc.Db, tasks: []const
             const fd = switch (sys.tcpSocket(tasks[ti].addr.is_v6)) {
                 .ok => |fd| fd,
                 .err => {
-                    // Out of sockets: put the probe back and retry it later.
-                    p.next -= 1;
                     try free_conns.append(gpa, ci);
-                    break;
+                    if (active.items.len > 0) {
+                        // Out of sockets: retry this probe once a connection closes.
+                        p.next -= 1;
+                        break;
+                    }
+                    // Nothing open can free a socket, so waiting would never end.
+                    if (finishAttempt(p)) remaining -= 1;
+                    continue;
                 },
             };
             c.fd = fd;

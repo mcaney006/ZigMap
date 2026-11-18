@@ -10,7 +10,11 @@ pub const PortState = enum(u8) {
     open,
     closed,
     filtered,
+    // `unfiltered` and `closed_filtered` come from no implemented scan; they
+    // stay so every `counts` key of schema zigmap.v1 remains present.
+    unfiltered,
     open_filtered,
+    closed_filtered,
 
     pub fn label(s: PortState) []const u8 {
         return switch (s) {
@@ -18,7 +22,9 @@ pub const PortState = enum(u8) {
             .open => "open",
             .closed => "closed",
             .filtered => "filtered",
+            .unfiltered => "unfiltered",
             .open_filtered => "open|filtered",
+            .closed_filtered => "closed|filtered",
         };
     }
 };
