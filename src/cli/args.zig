@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const targets = @import("../core/targets.zig");
+const engine = @import("../core/engine.zig");
 
 pub const Method = enum { connect, syn, udp };
 /// Conservative default; `--max-rate 0` removes the cap explicitly.
@@ -169,8 +170,9 @@ pub fn parse(gpa: std.mem.Allocator, args: []const [:0]const u8, diag: *Diagnost
             o.interface = try Next.get(args, &i, diag);
         } else if (std.mem.eql(u8, a, "--source-port-base")) {
             o.source_port_base = try parseNum(u16, try Next.get(args, &i, diag), diag);
-            if (o.source_port_base < 1024) {
-                diag.* = .{ .arg = a, .msg = "must be >= 1024" };
+            // The top of the range must leave room for at least one probe slot.
+            if (o.source_port_base < 1024 or o.source_port_base > 65536 - engine.poolCapacity(1)) {
+                diag.* = .{ .arg = a, .msg = "must be between 1024 and 65518" };
                 return error.InvalidArgument;
             }
         } else if (std.mem.eql(u8, a, "-sU")) {
@@ -236,7 +238,7 @@ pub fn parse(gpa: std.mem.Allocator, args: []const [:0]const u8, diag: *Diagnost
             o.show_all = true;
         } else if (std.mem.eql(u8, a, "--stats")) {
             o.stats = true;
-        } else if (std.mem.eql(u8, a, "--dry-run") or std.mem.eql(u8, a, "--plan")) {
+        } else if (std.mem.eql(u8, a, "--dry-run")) {
             o.dry_run = true;
         } else if (a.len > 1 and a[0] == '-') {
             diag.* = .{ .arg = a, .msg = "unknown option" };
@@ -271,6 +273,8 @@ test "parse common flags and reject unimplemented methods" {
     try testing.expectError(error.NotImplemented, parse(gpa, &.{ "zigmap", "-sA", "127.0.0.1" }, &d));
     try testing.expectError(error.InvalidArgument, parse(gpa, &.{ "zigmap", "--bogus" }, &d));
     try testing.expectError(error.MissingValue, parse(gpa, &.{ "zigmap", "-p" }, &d));
+    try testing.expectError(error.InvalidArgument, parse(gpa, &.{ "zigmap", "--source-port-base", "65530", "127.0.0.1" }, &d));
+    try testing.expectError(error.InvalidArgument, parse(gpa, &.{ "zigmap", "--source-port-base", "1000", "127.0.0.1" }, &d));
     try testing.expectError(error.InvalidTarget, parse(gpa, &.{ "zigmap", "bad_name!" }, &d));
     var h = try parse(gpa, &.{ "zigmap", "-sU", "-sV", "example.test" }, &d);
     defer h.hostnames.deinit(gpa);

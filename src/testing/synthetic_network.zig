@@ -359,6 +359,8 @@ test "self-connects are retried and never reported as open" {
         try testing.expect(saw_self);
     }
     try testing.expectEqual(@as(u64, 50), e.stats.inconclusive_replies);
+    // An answered retry after an inconclusive reply is not evidence of loss.
+    try testing.expectEqual(@as(u64, 0), e.stats.loss_events);
 }
 
 test "persistent inconclusive answers end as unknown, not open" {
@@ -376,6 +378,24 @@ test "persistent inconclusive answers end as unknown, not open" {
         try testing.expectEqual(ps.PortState.unknown, e.result(0, i).state);
         try testing.expectEqual(ps.Reason.self_connect, e.result(0, i).reason);
     }
+}
+
+test "a full group window under a rate cap waits instead of spinning" {
+    // Regression: with tokens available but no room in the group window,
+    // the engine polled with a zero timeout until the next reply.
+    const models = [_]HostModel{.{ .latency_ns = 50 * ms, .behavior = halfOpen }};
+    var sim = Sim.init(testing.allocator, &models, 29);
+    defer sim.deinit();
+    var cfg = baseCfg();
+    cfg.max_rate = 1000;
+    cfg.group_window = .{ .initial = 4, .max = 4, .initial_ssthresh = 4 };
+    const addrs = addrsFor(1);
+    const ports = portRange(40);
+    var e = try SimEngine.init(testing.allocator, cfg, &sim, addrs[0..1], &ports);
+    defer e.deinit();
+    try e.run();
+    for (0..ports.len) |i| try testing.expectEqual(expected(halfOpen(ports[i])), e.result(0, i).state);
+    try testing.expectEqual(@as(u64, 40), e.stats.probes_sent);
 }
 
 fn udpCfg(paced: bool) engine_mod.Config {

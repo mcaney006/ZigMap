@@ -50,15 +50,17 @@ pub const Netlink = struct {
             if (e != .SUCCESS) return error.RecvFailed;
             var it: msg.MessageIterator = .{ .buf = nl.buf[0..rc] };
             var multi = false;
+            var saw_reply = false;
             while (it.next()) |m| {
                 if (m.seq != seq) continue; // stale reply to an earlier request
+                saw_reply = true;
                 switch (m.type) {
                     msg.NLMSG_DONE => return,
                     msg.NLMSG_ERROR => {
                         const code = msg.errorCode(m.payload) orelse return error.Malformed;
                         if (code == 0) return; // ACK
-                        if (code == -@as(i32, @intFromEnum(linux.E.NETUNREACH)) or code == -@as(i32, @intFromEnum(linux.E.HOSTUNREACH))) return error.NoRoute;
-                        if (code == -@as(i32, @intFromEnum(linux.E.NODEV))) return error.NoSuchInterface;
+                        if (code == -@as(i32, @backingInt(linux.E.NETUNREACH)) or code == -@as(i32, @backingInt(linux.E.HOSTUNREACH))) return error.NoRoute;
+                        if (code == -@as(i32, @backingInt(linux.E.NODEV))) return error.NoSuchInterface;
                         return error.KernelError;
                     },
                     else => {
@@ -68,7 +70,8 @@ pub const Netlink = struct {
                 }
             }
             if (it.malformed) return error.Malformed;
-            if (!multi) return;
+            // A datagram holding only stale replies says nothing about ours.
+            if (saw_reply and !multi) return;
         }
     }
 
@@ -99,23 +102,6 @@ pub const Netlink = struct {
                 return false;
             }
         } = .{};
-        try nl.exchange(m, &ctx);
-        return ctx.link orelse error.NoSuchInterface;
-    }
-
-    pub fn linkByName(nl: *Netlink, name: []const u8) Error!msg.Link {
-        var req: [64]u8 = undefined;
-        const m = msg.buildLinkDump(&req, nl.seq) catch unreachable;
-        var ctx: struct {
-            want: []const u8,
-            link: ?msg.Link = null,
-            fn onMessage(c: *@This(), mm: msg.Message) Error!bool {
-                if (mm.type != msg.RTM_NEWLINK) return true;
-                const l = msg.parseLink(mm.payload) catch return error.Malformed;
-                if (c.link == null and std.mem.eql(u8, l.nameSlice(), c.want)) c.link = l;
-                return true; // drain the dump
-            }
-        } = .{ .want = name };
         try nl.exchange(m, &ctx);
         return ctx.link orelse error.NoSuchInterface;
     }

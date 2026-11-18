@@ -4,7 +4,7 @@
    `build.zig.zon` (`.version`), merge to `main`.
 2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
 3. `.github/workflows/release.yml` checks that the tag matches both
-   versions, runs the tests, builds the four static binaries, packages
+   versions, runs the tests, builds the four release binaries (static on Linux), packages
    them with `packaging/package.sh` (deterministic tarballs and
    `SHA256SUMS`), publishes the GitHub release, then installs it with
    `install.sh` on Linux x86_64, Linux aarch64 and macOS arm64.

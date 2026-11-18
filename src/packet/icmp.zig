@@ -85,7 +85,7 @@ pub const Quote = struct {
     transport_ok: bool,
 };
 
-pub fn decodeQuoteV4(body: []const u8) error{ Truncated, BadVersion, BadHeaderLength, BadTotalLength }!Quote {
+pub fn decodeQuoteV4(body: []const u8) ipv4.DecodeError!Quote {
     const d = try ipv4.decode(body, .{ .allow_truncated = true });
     var q: Quote = .{
         .src = @as([16]u8, @splat(0)),
@@ -114,7 +114,7 @@ pub fn decodeQuoteV6(body: []const u8) ipv6.DecodeError!Quote {
     };
 }
 
-/// Encodes an echo request. ICMPv4 checksums cover only the message; ICMPv6
+/// Encodes an ICMP echo request or reply. ICMPv4 checksums cover only the message; ICMPv6
 /// adds the pseudo-header, so pass `pseudo = 0` for v4.
 pub fn encodeEcho(type_: u8, id: u16, seq: u16, payload: []const u8, pseudo: u32, out: []u8) error{BufferTooSmall}!usize {
     const total = header_len + payload.len;
@@ -131,7 +131,7 @@ pub fn encodeEcho(type_: u8, id: u16, seq: u16, payload: []const u8, pseudo: u32
 }
 
 pub fn verify(msg: []const u8, pseudo: u32) bool {
-    return checksum.finish(checksum.add(pseudo, msg)) == 0;
+    return checksum.verifyWithPseudo(pseudo, msg);
 }
 
 const testing = std.testing;

@@ -1,5 +1,5 @@
 //! Scan counters. Transmit, receive, correlation, and classification are
-//! tracked separately: a fast scanner that misclassifies is not a good one.
+//! tracked separately.
 
 pub const Stats = struct {
     probes_sent: u64 = 0,

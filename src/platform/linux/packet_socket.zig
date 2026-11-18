@@ -6,12 +6,16 @@
 //! compares them.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
+const bpf = @import("../bpf.zig");
+const native = builtin.cpu.arch.endian();
 
 pub const OpenError = error{ PermissionDenied, SocketFailed, BindFailed };
 
 const ETH_P_ALL: u16 = 0x0003;
 const TP_STATUS_CSUMNOTREADY: u32 = 1 << 3;
+const PACKET_IGNORE_OUTGOING: u32 = 23; // linux/if_packet.h
 
 pub const Frame = struct {
     len: usize,
@@ -97,7 +101,7 @@ pub const PacketSocket = struct {
                 const ch: *align(1) const linux.cmsghdr = @ptrCast(control[off..].ptr);
                 if (ch.len < hdr_len or off + ch.len > mh.controllen) break;
                 if (ch.level == linux.SOL.PACKET and ch.type == linux.PACKET.AUXDATA and ch.len >= hdr_len + 4) {
-                    const status = std.mem.readInt(u32, control[off + hdr_len ..][0..4], @import("builtin").cpu.arch.endian());
+                    const status = std.mem.readInt(u32, control[off + hdr_len ..][0..4], native);
                     f.csum_not_ready = status & TP_STATUS_CSUMNOTREADY != 0;
                 }
                 off += std.mem.alignForward(usize, ch.len, linux.cmsg_align);
@@ -199,10 +203,6 @@ pub const RawIp6Socket = struct {
 
 // ------------------------------------------------------------ fast path
 
-const builtin = @import("builtin");
-const bpf = @import("../bpf.zig");
-const native = builtin.cpu.arch.endian();
-
 /// Frame metadata handed to a drain callback. `bytes` is only valid during
 /// the callback: with the ring it points into a block that is returned to
 /// the kernel right after, so callers must copy anything they keep.
@@ -211,8 +211,6 @@ pub const FrameView = struct {
     outgoing: bool,
     csum_not_ready: bool,
 };
-
-const PACKET_IGNORE_OUTGOING: u32 = 23; // linux/if_packet.h
 
 pub const CaptureMode = enum { recvmsg, ring };
 

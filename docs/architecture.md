@@ -50,8 +50,10 @@ evidence but can never change a classification.
 ## Scheduling
 
 * **Windows.** Per-host and group windows (slow start / avoidance,
-  fixed-point). Only *evidenced loss* shrinks a window: a reply to attempt
-  N > 1 proves earlier attempts were lost. Timeouts alone never shrink a
+  fixed-point). Only *evidenced loss* shrinks a window: a reply after an
+  earlier attempt of the same probe timed out proves that attempt was lost
+  (a retry after an inconclusive answer, such as a self-connect, is not
+  loss). Timeouts alone never shrink a
   window, because firewalls drop silently by design (tested:
   `silence alone never shrinks congestion windows`).
 * **RTO.** RFC 6298 per host, clamped by `--min/--max-rtt-timeout`. Per-probe
@@ -61,7 +63,7 @@ evidence but can never change a classification.
   deadline for the poll timeout. Benchmarked against an O(N) sweep in
   `bench/timer_bench.zig`: the sweep is faster at 64 entries, they tie at
   256, and the heap is 4.9x faster at 1,024 and 39x at 16,384.
-* **Fairness.** Deficit round robin over hosts with a quantum (default 8).
+* **Fairness.** Round robin over hosts with a quantum (default 8).
   Tested: a fully filtered 200 ms host does not slow a healthy host by more
   than 1.5x.
 * **Pacing.** Token bucket (`--max-rate`), ~20 ms burst. Tested in
@@ -126,10 +128,10 @@ traffic; the bridge lab checks that the results are identical.
 ## UDP pacing
 
 Linux limits ICMP errors per destination (about one per second after a
-small burst by default). When a host's silence stops being evidence, the
-engine's `pace_trigger` sees an ICMP port-unreachable, switches that host
-to `paced_pps` probes per second, and counts it in `paced_hosts`. Other
-hosts keep their own pace.
+small burst by default). The first ICMP port-unreachable from a host trips
+`pace_trigger`, which switches that host to `paced_pps` probes per second,
+so later silence is not an artefact of our own speed, and counts it in
+`paced_hosts`. Other hosts keep their own pace.
 
 ## Service detection
 

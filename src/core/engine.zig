@@ -12,6 +12,7 @@
 //!   fn send(*T, slot: u32, gen: u32, addr: Addr, port: u16) SendOutcome
 //!   fn poll(*T, timeout_ns: u64, out: []Event) usize  waits at most timeout
 //!   fn cancel(*T, slot: u32) void                     drop transport state
+//!   fn pending(*T) usize   (optional)                captured replies not yet polled
 //!
 //! Classification lives in the transport-specific `classify` callback in
 //! `Config`, because the meaning of a reply depends on the scan method.
@@ -50,6 +51,12 @@ pub const Event = struct {
     at_ns: u64,
 };
 
+/// Probe slots for a scan with at most `parallelism` probes in flight.
+/// Retry-queued probes keep their slot, so there is headroom beyond the window.
+pub fn poolCapacity(parallelism: u32) u32 {
+    return parallelism * 2 + 16;
+}
+
 pub const Classification = struct { state: PortState, definitive: bool };
 
 pub const Config = struct {
@@ -61,7 +68,7 @@ pub const Config = struct {
     max_rate: u32 = 0,
     /// Per-host wall-clock budget; 0 = none.
     host_timeout_ns: u64 = 0,
-    /// Probes issued to one host per scheduling turn (deficit round robin quantum).
+    /// Probes issued to one host per round-robin turn.
     quantum: u32 = 8,
     /// State assigned when every attempt went unanswered.
     silent_state: PortState = .filtered,
@@ -129,7 +136,6 @@ pub fn Engine(comptime T: type) type {
         rr_cursor: u32 = 0,
         active_hosts: u32,
         trace: ?Trace = null,
-        cancel_requested: bool = false,
         /// Optional externally-owned flag (e.g. set by a SIGINT handler).
         external_cancel: ?*const std.atomic.Value(bool) = null,
 
@@ -145,9 +151,7 @@ pub fn Engine(comptime T: type) type {
             const results = try gpa.alloc(PortResult, addrs.len * ports.len);
             errdefer gpa.free(results);
             @memset(results, .{});
-            // In-flight probes are bounded by the group window; retry-queued
-            // probes keep their slot, so leave headroom for them.
-            const cap = cfg.group_window.max * 2 + 16;
+            const cap = poolCapacity(cfg.group_window.max);
             var pool = try probe_mod.Pool.init(gpa, cap);
             errdefer pool.deinit(gpa);
             var timers = try TimerHeap.init(gpa, cap);
@@ -178,11 +182,15 @@ pub fn Engine(comptime T: type) type {
         }
 
         pub fn result(e: *const Self, host: usize, port_index: usize) *const PortResult {
-            return &e.results[host * e.ports.len + port_index];
+            return &e.results[e.resultIndex(host, port_index)];
         }
 
         fn resultMut(e: *Self, p: *const Probe) *PortResult {
-            return &e.results[@as(usize, p.host) * e.ports.len + p.port_index];
+            return &e.results[e.resultIndex(p.host, p.port_index)];
+        }
+
+        fn resultIndex(e: *const Self, host: usize, port_index: usize) usize {
+            return host * e.ports.len + port_index;
         }
 
         fn relUs(e: *const Self, t: u64) u32 {
@@ -193,14 +201,23 @@ pub fn Engine(comptime T: type) type {
             if (e.trace) |tr| tr.func(tr.ctx, .{ .t_ns = t -| e.start_ns, .kind = kind, .addr = e.hosts[p.host].addr, .port = p.port, .attempt = p.attempt, .reason = reason });
         }
 
-        /// Runs until every host is complete, timed out, or `requestCancel`.
+        /// Runs until every host is complete or timed out, or `external_cancel` is set.
         pub fn run(e: *Self) !void {
             var events: [256]Event = undefined;
             while (e.active_hosts > 0) {
                 var now = e.transport.now();
-                if (e.cancel_requested or (if (e.external_cancel) |f| f.load(.monotonic) else false)) {
+                if (if (e.external_cancel) |f| f.load(.monotonic) else false) {
                     e.cancelAll(now, .canceled);
                     break;
+                }
+                // Replies the transport already captured beat any timer that
+                // has expired since: deliver them before timing probes out.
+                if (@hasDecl(T, "pending")) {
+                    var rounds: u32 = 0;
+                    while (e.transport.pending() > 0 and rounds < 32) : (rounds += 1) {
+                        const n = e.transport.poll(0, &events);
+                        for (events[0..n]) |ev| e.onReply(ev);
+                    }
                 }
                 while (e.timers.popExpired(now)) |t| e.onTimeout(t.id, now);
                 e.checkHostTimeouts(now);
@@ -215,16 +232,12 @@ pub fn Engine(comptime T: type) type {
             e.stats.wall_ns = e.transport.now() -| e.start_ns;
         }
 
-        pub fn requestCancel(e: *Self) void {
-            e.cancel_requested = true;
-        }
-
         fn pollTimeout(e: *Self, now: u64) u64 {
             var wait: u64 = std.time.ns_per_s;
             if (e.timers.peek()) |t| wait = @min(wait, t.deadline -| now);
             if (e.cfg.max_rate != 0 and e.hasIssuableWork(now)) wait = @min(wait, e.limiter.waitNs(now));
             for (e.hosts) |*h| if (h.limiter) |*hl| {
-                if (!h.done and (h.retries.len > 0 or h.next_port < e.ports.len) and h.window.available() > 0) wait = @min(wait, @max(1, hl.waitNs(now)));
+                if (e.canIssue(h)) wait = @min(wait, @max(1, hl.waitNs(now)));
             };
             if (e.cfg.host_timeout_ns != 0) {
                 for (e.hosts) |*h| if (!h.done and h.started) {
@@ -239,12 +252,21 @@ pub fn Engine(comptime T: type) type {
         fn hasIssuableWork(e: *Self, now: u64) bool {
             for (e.hosts) |*h| {
                 if (h.limiter) |*hl| if (hl.waitNs(now) > 0) continue;
-                if (!h.done and (h.retries.len > 0 or h.next_port < e.ports.len) and h.window.available() > 0) return true;
+                if (e.canIssue(h)) return true;
             }
             return false;
         }
 
-        /// Deficit round robin across hosts: each turn a host may issue up to
+        fn hasWork(e: *const Self, h: *const Host) bool {
+            return !h.done and (h.retries.len > 0 or h.next_port < e.ports.len);
+        }
+
+        /// The host has a probe to send and both windows have room for it.
+        fn canIssue(e: *const Self, h: *const Host) bool {
+            return e.hasWork(h) and h.window.available() > 0 and e.group.available() > 0;
+        }
+
+        /// Round robin across hosts: each turn a host may issue up to
         /// `quantum` probes, bounded by its own and the group window. A slow
         /// or silent host therefore cannot starve the others.
         fn issue(e: *Self, now: u64) void {
@@ -261,7 +283,7 @@ pub fn Engine(comptime T: type) type {
                     continue;
                 }
                 var sent: u32 = 0;
-                while (sent < e.cfg.quantum and h.window.available() > 0 and e.group.available() > 0) {
+                while (sent < e.cfg.quantum and e.canIssue(h)) {
                     if (h.limiter) |*hl| if (hl.waitNs(now) > 0) break;
                     if (!e.limiter.tryTake(now)) return;
                     if (h.limiter) |*hl| _ = hl.tryTake(now);
@@ -374,7 +396,7 @@ pub fn Engine(comptime T: type) type {
             e.conclude(ev.slot, ev.reason, ev.at_ns, true);
         }
 
-        /// Applies a reply's classification. `in_flight` distinguishes
+        /// Applies a reply's classification. `from_network` distinguishes
         /// network replies (which drive RTT and windows) from transport
         /// answers delivered synchronously at send time.
         fn conclude(e: *Self, id: u32, reason: Reason, at: u64, from_network: bool) void {
@@ -385,8 +407,8 @@ pub fn Engine(comptime T: type) type {
             if (from_network) {
                 h.rtt.addSample(rtt);
                 h.replies += 1;
-                if (p.attempt > 1) {
-                    // Earlier attempts went unanswered yet this one was
+                if (p.timeouts > 0) {
+                    // An earlier attempt timed out yet this one was
                     // answered: evidence that the path is dropping packets.
                     h.window.onLoss();
                     e.group.onLoss();
@@ -424,10 +446,10 @@ pub fn Engine(comptime T: type) type {
 
         fn onTimeout(e: *Self, id: u32, now: u64) void {
             const p = &e.pool.slots[id];
-            std.debug.assert(p.state == .awaiting);
             const h = &e.hosts[p.host];
             const r = e.resultMut(p);
             p.to(.timed_out);
+            p.timeouts += 1;
             h.window.onRetire();
             e.group.onRetire();
             e.transport.cancel(id);
@@ -499,7 +521,7 @@ pub fn Engine(comptime T: type) type {
             }
             h.retries = .{};
             var i = h.next_port;
-            while (i < e.ports.len) : (i += 1) e.results[@as(usize, hi) * e.ports.len + i].reason = reason;
+            while (i < e.ports.len) : (i += 1) e.results[e.resultIndex(hi, i)].reason = reason;
             h.next_port = @intCast(e.ports.len);
             e.finishHost(hi, now, reason == .host_timeout);
         }

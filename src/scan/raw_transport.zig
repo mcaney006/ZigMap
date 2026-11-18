@@ -16,6 +16,7 @@ const packet = @import("../packet.zig");
 const engine = @import("../core/engine.zig");
 const targets = @import("../core/targets.zig");
 const raw = @import("raw.zig");
+const service = @import("../fingerprint/service.zig");
 const nlmsg = @import("../platform/netlink_msg.zig");
 const bpf = @import("../platform/bpf.zig");
 const Netlink = @import("../platform/linux/netlink.zig").Netlink;
@@ -268,15 +269,19 @@ pub const Mode = enum { syn, udp, discovery };
 
 /// Discovery "ports": each engine port index is one probe type.
 pub const DiscoveryProbe = enum(u16) { icmp_echo = 1, tcp_syn_443 = 2, tcp_ack_80 = 3 };
-pub const discovery_ports = [_]u16{ 1, 2, 3 };
+pub const discovery_ports = blk: {
+    const probes = std.enums.values(DiscoveryProbe);
+    var ports: [probes.len]u16 = undefined;
+    for (probes, &ports) |p, *port| port.* = @backingInt(p);
+    break :blk ports;
+};
 
 const ntp_client = [_]u8{0x23} ++ @as([47]u8, @splat(0));
 
 /// Original, minimal UDP payloads that elicit replies from common services.
 pub fn udpPayload(port: u16) []const u8 {
     return switch (port) {
-        // DNS: standard query, id 0x7a6d, "version.bind" TXT class CH
-        53 => "\x7a\x6d\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03",
+        53 => service.dns_version_query,
         // NTP: version 4, mode 3 (client), otherwise zero
         123 => &ntp_client,
         else => "",
@@ -306,6 +311,11 @@ pub const RawTransport = struct {
     rx: [65536]u8 = undefined,
     events: []engine.Event = &.{},
     n_events: usize = 0,
+    /// Matched replies that did not fit in the engine's buffer. A ring block
+    /// is drained whole, so one poll can match more replies than `events`
+    /// holds; the rest are delivered on the next poll instead of dropped.
+    backlog: [4096]engine.Event = undefined,
+    n_backlog: usize = 0,
 
     pub const Options = struct {
         mode: Mode,
@@ -377,7 +387,7 @@ pub const RawTransport = struct {
         switch (t.mode) {
             .syn => kind = .tcp_syn,
             .udp => kind = .udp,
-            .discovery => switch (@as(DiscoveryProbe, @enumFromInt(port))) {
+            .discovery => switch (@as(DiscoveryProbe, @fromBackingInt(@intCast(port)))) {
                 .icmp_echo => {
                     kind = .icmp_echo;
                     dport = 0;
@@ -418,7 +428,6 @@ pub const RawTransport = struct {
             .icmp_echo => t.l3_v6_icmp.?.send(f[0..n], addr.bytes),
         };
         result catch |err| {
-            t.corr.disarm(slot);
             return switch (err) {
                 error.WouldBlock => .deferred,
                 error.SendFailed => .{ .immediate = .local_resource_exhausted },
@@ -433,7 +442,6 @@ pub const RawTransport = struct {
             t.corr.stats.outgoing_skipped += 1;
             return;
         }
-        if (t.n_events >= t.events.len) return;
         const pk = packet.parser.parse(.ethernet, fr.bytes) catch {
             t.corr.stats.parse_errors += 1;
             return;
@@ -446,15 +454,27 @@ pub const RawTransport = struct {
             if (m.reason == .syn_ack and gop.value_ptr.synack == null) gop.value_ptr.synack = t.corr.last_facts;
             if (m.reason == .rst and gop.value_ptr.rst == null) gop.value_ptr.rst = t.corr.last_facts;
         }
-        t.events[t.n_events] = .{ .slot = m.slot, .generation = m.gen, .reason = m.reason, .at_ns = t.now() };
-        t.n_events += 1;
+        const ev: engine.Event = .{ .slot = m.slot, .generation = m.gen, .reason = m.reason, .at_ns = t.now() };
+        if (t.n_events < t.events.len) {
+            t.events[t.n_events] = ev;
+            t.n_events += 1;
+        } else if (t.n_backlog < t.backlog.len) {
+            t.backlog[t.n_backlog] = ev;
+            t.n_backlog += 1;
+        } else t.corr.stats.events_dropped += 1;
     }
 
     pub fn poll(t: *RawTransport, timeout_ns: u64, out: []engine.Event) usize {
         const ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch unreachable;
         t.events = out;
-        t.n_events = 0;
-        if (!t.sock.waitReadable(@intCast(@min(ms, std.math.maxInt(i32))))) return 0;
+        // Hand over replies left from the previous drain before reading more.
+        t.n_events = @min(t.n_backlog, out.len);
+        @memcpy(out[0..t.n_events], t.backlog[0..t.n_events]);
+        std.mem.copyForwards(engine.Event, t.backlog[0 .. t.n_backlog - t.n_events], t.backlog[t.n_events..t.n_backlog]);
+        t.n_backlog -= t.n_events;
+        if (t.n_events == out.len) return t.n_events;
+        const wait_ms: i32 = if (t.n_events > 0) 0 else @intCast(@min(ms, std.math.maxInt(i32)));
+        if (!t.sock.waitReadable(wait_ms)) return t.n_events;
         // Bounded drain: a capture flood cannot starve the scheduler.
         _ = ps_mod.drain(&t.sock, if (t.ring) |*r| r else null, &t.rx, 4096, t);
         t.corr.stats.kernel_drops += t.sock.takeDrops();
@@ -462,8 +482,12 @@ pub const RawTransport = struct {
         return t.n_events;
     }
 
-    pub fn cancel(t: *RawTransport, slot: u32) void {
-        // Keep the slot "used" so late replies are still recognised as stale.
-        t.corr.disarm(slot);
+    /// Replies captured but not yet handed to the engine.
+    pub fn pending(t: *const RawTransport) usize {
+        return t.n_backlog;
     }
+
+    /// Nothing to release: the correlator slot stays "used" so late
+    /// replies are still recognised as stale.
+    pub fn cancel(_: *RawTransport, _: u32) void {}
 };

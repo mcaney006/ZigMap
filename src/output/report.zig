@@ -5,11 +5,11 @@
 //!   scan_start {schema, version, method, proto, targets, ports, max_retries, max_rate}
 //!   port       {host, port, proto, method, state, reason, attempts, rtt_us,
 //!               evidence?: [{kind, reason, attempt, t_us}], evidence_dropped?,
-//!               service?: {name, product, version, confidence, probe, rule, extra}}
+//!               service?: {name, product, version, confidence, matched, probe, rule, extra}}
 //!   host       {host, status: completed|timed_out|canceled|down, discovery,
 //!               counts{...}, srtt_us, rto_us, replies,
-//!               os?: {confidence, name, score, reasons[], middlebox[]}}
-//!   capture    {frames, ... raw backend counters}           (raw scans only)
+//!               os?: {confidence, name, score, observed, reasons[], middlebox[]}}
+//!   capture    {stats{frames, ... raw backend counters}}    (raw scans only)
 //!   scan_end   {stats{...}, wall_ms, cpu_user_ms, cpu_sys_ms, peak_rss_bytes,
 //!               ports_per_s, completion_us{p50,p95,p99}}
 //! Fields and record types are only ever added; never renamed or retyped.
@@ -138,7 +138,11 @@ pub fn writeText(w: *std.Io.Writer, v: View, show_all: bool, explain: bool) !voi
             if (explain) {
                 try writeEvidenceText(w, r);
                 if (v.service(hi, i)) |s| {
-                    if (s.matched) try w.print("      service: probe {s}, rule #{d}", .{ s.probe, s.rule_index orelse 0 }) else try w.writeAll("      service: no rule matched");
+                    if (!s.matched) {
+                        try w.writeAll("      service: no rule matched");
+                    } else if (s.rule_index) |ri| {
+                        try w.print("      service: probe {s}, rule #{d}", .{ s.probe, ri });
+                    } else try w.print("      service: probe {s}, protocol handler", .{s.probe});
                     if (s.extra_len > 0) try w.print("; {s}", .{s.extraSlice()});
                     try w.writeByte('\n');
                 }
@@ -231,13 +235,10 @@ pub fn writeStats(w: *std.Io.Writer, s: Stats, u: Usage, c: ?Completion) !void {
         \\  wall {d} ms, cpu user {d} ms, sys {d} ms, peak RSS {d} KiB
         \\
     , .{
-        s.probes_sent,       s.retransmissions,  s.replies_matched, s.inconclusive_replies, s.stale_replies,
-        s.invalid_replies,   s.timeouts,         s.loss_events,     s.send_deferred,        s.local_errors,
-        s.probes_canceled,   s.paced_hosts,      s.ports_classified, s.hosts_completed,     s.max_in_flight,
-        s.wall_ns / std.time.ns_per_ms,
-        u.user_ns / std.time.ns_per_ms,
-        u.sys_ns / std.time.ns_per_ms,
-        u.max_rss_bytes / 1024,
+        s.probes_sent,                  s.retransmissions,              s.replies_matched,             s.inconclusive_replies, s.stale_replies,
+        s.invalid_replies,              s.timeouts,                     s.loss_events,                 s.send_deferred,        s.local_errors,
+        s.probes_canceled,              s.paced_hosts,                  s.ports_classified,            s.hosts_completed,      s.max_in_flight,
+        s.wall_ns / std.time.ns_per_ms, u.user_ns / std.time.ns_per_ms, u.sys_ns / std.time.ns_per_ms, u.max_rss_bytes / 1024,
     });
     if (c) |x| try w.print("  ports classified per second {d}; port completion p50 {d:.1} ms, p95 {d:.1} ms, p99 {d:.1} ms\n", .{
         x.ports_per_s,
@@ -259,8 +260,7 @@ pub fn writeCaptureText(w: *std.Io.Writer, c: CaptureStats) !void {
 
 // ----------------------------------------------------- JSON primitives
 
-/// Writes a JSON string. All dynamic text in Zigmap is already sanitised
-/// to printable ASCII, but escaping is still applied defensively.
+/// Writes a JSON string with quotes, backslashes and control bytes escaped.
 fn jstr(w: *std.Io.Writer, s: []const u8) !void {
     try w.writeByte('"');
     for (s) |ch| switch (ch) {
@@ -340,20 +340,12 @@ fn writeHostFields(w: *std.Io.Writer, v: View, hi: usize) !void {
     };
 }
 
-fn writeStatsObject(w: *std.Io.Writer, s: Stats) !void {
+/// `{"field":n,...}` for a struct of integer counters.
+fn writeIntFields(w: *std.Io.Writer, s: anytype) !void {
     try w.writeByte('{');
-    inline for (@typeInfo(Stats).@"struct".field_names, 0..) |name, k| {
+    inline for (@typeInfo(@TypeOf(s)).@"struct".field_names, 0..) |name, k| {
         if (k > 0) try w.writeByte(',');
         try w.print("\"{s}\":{d}", .{ name, @field(s, name) });
-    }
-    try w.writeByte('}');
-}
-
-fn writeCaptureObject(w: *std.Io.Writer, c: CaptureStats) !void {
-    try w.writeByte('{');
-    inline for (@typeInfo(CaptureStats).@"struct".field_names, 0..) |name, k| {
-        if (k > 0) try w.writeByte(',');
-        try w.print("\"{s}\":{d}", .{ name, @field(c, name) });
     }
     try w.writeByte('}');
 }
@@ -375,11 +367,11 @@ pub fn writeJsonl(w: *std.Io.Writer, v: View, explain: bool) !void {
     }
     if (v.capture) |c| {
         try w.print("{{\"schema\":\"{s}\",\"type\":\"capture\",\"stats\":", .{schema});
-        try writeCaptureObject(w, c);
+        try writeIntFields(w, c);
         try w.writeAll("}\n");
     }
     try w.print("{{\"schema\":\"{s}\",\"type\":\"scan_end\",\"stats\":", .{schema});
-    try writeStatsObject(w, v.stats);
+    try writeIntFields(w, v.stats);
     try w.print(",\"wall_ms\":{d},\"cpu_user_ms\":{d},\"cpu_sys_ms\":{d},\"peak_rss_bytes\":{d}", .{ v.stats.wall_ns / std.time.ns_per_ms, v.usage.user_ns / std.time.ns_per_ms, v.usage.sys_ns / std.time.ns_per_ms, v.usage.max_rss_bytes });
     try writeCompletionFields(w, v.completion);
     try w.writeAll("}\n");
@@ -415,11 +407,11 @@ pub fn writeJson(w: *std.Io.Writer, v: View, explain: bool) !void {
         try w.writeAll("]}");
     }
     try w.writeAll("],\"stats\":");
-    try writeStatsObject(w, v.stats);
+    try writeIntFields(w, v.stats);
     try writeCompletionFields(w, v.completion);
     if (v.capture) |c| {
         try w.writeAll(",\"capture\":");
-        try writeCaptureObject(w, c);
+        try writeIntFields(w, c);
     }
     try w.writeAll("}\n");
 }

@@ -218,7 +218,13 @@ fn dnsLoop(lfd: i32) void {
         }.f;
         put(&ans, &w, q[0..2]); // transaction id
         put(&ans, &w, "\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00"); // response, AA; 1 question, 1 answer
-        put(&ans, &w, q[12..n]); // question, echoed
+        // Echo only the question (QNAME labels, QTYPE, QCLASS), not any
+        // additional records such as an EDNS OPT.
+        var qend: usize = 12;
+        while (qend < n and q[qend] != 0 and q[qend] < 0x40) qend += @as(usize, q[qend]) + 1;
+        qend += 1 + 4;
+        if (qend > n) continue;
+        put(&ans, &w, q[12..qend]);
         put(&ans, &w, "\xc0\x0c\x00\x10\x00\x03\x00\x00\x00\x00"); // name ptr, TXT, CHAOS, TTL 0
         var rd: [3]u8 = undefined;
         std.mem.writeInt(u16, rd[0..2], version.len + 1, .big);

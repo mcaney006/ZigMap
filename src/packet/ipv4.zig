@@ -1,7 +1,4 @@
 //! IPv4 header encoder and bounded decoder (RFC 791).
-//!
-//! Decoding never casts untrusted bytes to structs; every field is read with
-//! explicit bounds and big-endian conversion.
 
 const std = @import("std");
 const checksum = @import("checksum.zig");
@@ -131,10 +128,6 @@ pub fn encode(h: Header, payload_len: usize, out: []u8) EncodeError!usize {
     @memcpy(out[16..20], &h.dst);
     std.mem.writeInt(u16, out[10..12], checksum.compute(out[0..20]), .big);
     return header_min_len;
-}
-
-pub fn format(addr: [4]u8, buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{ addr[0], addr[1], addr[2], addr[3] }) catch buf[0..0];
 }
 
 const testing = std.testing;

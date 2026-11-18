@@ -1,7 +1,7 @@
 name: Release
 
-# Pushing a tag vX.Y.Z (matching `version` in src/output/report.zig)
-# builds the static binaries, publishes them with SHA256SUMS as a GitHub
+# Pushing a tag vX.Y.Z (matching `version` in src/output/report.zig and
+# build.zig.zon) builds the release binaries (static on Linux), publishes them with SHA256SUMS as a GitHub
 # release, then installs that release with install.sh on Linux and macOS.
 
 on:

@@ -7,7 +7,7 @@
 const std = @import("std");
 
 /// Adds `data` (interpreted as big-endian 16-bit words) to `acc`.
-/// Folds as it goes so arbitrary-length input never overflows.
+/// Sums into a u64 and folds once at the end, so long input cannot overflow.
 pub fn add(acc: u32, data: []const u8) u32 {
     var sum: u64 = acc;
     var i: usize = 0;
@@ -29,6 +29,11 @@ pub fn addU32(acc: u32, v: u32) u32 {
 }
 
 /// Folds the accumulator to 16 bits and returns its ones complement.
+/// `verify` for a segment covered by a pseudo-header partial sum.
+pub fn verifyWithPseudo(pseudo: u32, data: []const u8) bool {
+    return finish(add(pseudo, data)) == 0;
+}
+
 pub fn finish(acc: u32) u16 {
     var s = acc;
     while (s >> 16 != 0) s = (s & 0xffff) + (s >> 16);

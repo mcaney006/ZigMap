@@ -12,7 +12,7 @@ and there is no Internet-wide mode, no spoofing and no privilege escalation.
 
 ## Install
 
-Prebuilt static binaries for Linux and macOS on x86_64 and aarch64.
+Prebuilt binaries for Linux (static) and macOS, on x86_64 and aarch64.
 
 Homebrew (macOS and Linux):
 
@@ -50,7 +50,7 @@ or `CAP_NET_RAW`.
 | Service detection `-sV` | Original probe file (`src/fingerprint/probes.zmp`), banner matching, TLS 1.2 handshake with certificate details, DNS `version.bind`. |
 | OS detection `-O` | Uses the SYN/ACK and RST the scan already received. Lab-captured reference only; see `docs/os-fingerprints.md`. |
 | Output | Terminal, `--explain`, JSON Lines and JSON (schema `zigmap.v1`), XML. `--stats` adds engine counters, CPU, peak RSS, ports per second and p50/p95/p99 port completion time. |
-| Releases | `zig build release` makes stripped static binaries for x86_64 and aarch64 Linux and macOS. Two builds from empty caches are byte-identical. |
+| Releases | `zig build release` makes stripped binaries (static on Linux) for x86_64 and aarch64 Linux and macOS. Two builds from empty caches are byte-identical. |
 
 Not implemented, and rejected with an error: `-sA`, `-sN`, `-sF`, `-sX`.
 
@@ -58,24 +58,25 @@ Not implemented, and rejected with an error: `-sA`, `-sN`, `-sF`, `-sX`.
 
 ```sh
 zig build                       # zig-out/bin/zigmap
-zig build test                  # 92 unit, golden-vector, fuzz-corpus and simulation tests
+zig build test                  # unit, golden-vector, fuzz-corpus and simulation tests
 zig build bench -Doptimize=ReleaseFast
 zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
-zig build release               # stripped static binaries in zig-out/release/
+zig build release               # stripped binaries (static on Linux) in zig-out/release/
 sh tests/release/reproducible.sh   # builds the release twice, compares SHA-256
 ARCH=aarch64 sh tests/lab/run.sh            # loopback lab in one container
 ARCH=aarch64 sh tests/lab/syn_lab.sh        # two containers on Docker bridges
 ARCH=aarch64 sh tests/bench/capture_bench.sh
 ```
 
-GitHub Actions runs `zig build test` on Linux and macOS for every pull
-request and every push to `main` (`.github/workflows/ci.yml`), and
-cross-compiles the lab helper. The labs and benchmarks need Docker and
-root inside containers, so they run locally, not in CI.
+GitHub Actions runs `zig build test` on Linux and macOS for every push to
+`main` and every pull request that changes more than Markdown or `docs/`
+(`.github/workflows/ci.yml`), and cross-compiles the lab helper. The
+labs and benchmarks need Docker and root inside containers, so they run
+locally, not in CI.
 
-The labs need Docker and run only inside throwaway containers and networks.
-They never touch the host's routing, ARP, DNS or firewall. Their
-listeners, service fakes and UDP noise come from `labtool`
+They change only throwaway containers and the Docker networks the bridge
+lab creates and removes, never the host's own routes, DNS or firewall
+rules. Their listeners, service fakes and UDP noise come from `labtool`
 (`tests/lab/labtool.zig`, built by `zig build lab-tools`, never installed
 by a plain `zig build`); the TLS fake is `openssl s_server`, and `jq` and
 `xmllint` check the JSON and XML output.
@@ -136,18 +137,18 @@ change `route_localnet` to work around it.
   and agreement with `nmap -sT` and `nmap -sS` on every port. nmap is used
   only as a reference.
 * **Bridge lab** (`tests/lab/syn_lab.sh`): SYN over veth with ARP, agreement
-  with `nmap -sS` and `nmap -sU`, the three capture paths giving identical
-  results, `-sV` against lab service fakes, `-O`, discovery of on-link,
-  silent and routed hosts, IPv6 over Ethernet with NDP, delay and loss,
+  with `nmap -sS` and `nmap -sU`, all four capture configurations
+  (`recvmsg` or ring, BPF on or off) giving identical results, `-sV`
+  against lab service fakes, `-O`, discovery of on-link, silent and
+  routed hosts, IPv6 over Ethernet with NDP, delay and loss,
   JSON and XML that parse, and exit 77 without CAP_NET_RAW.
 
 Both labs pass on Linux aarch64 (native) and x86_64 (emulated), kernel
 7.2.12, in OrbStack. The bridge lab's results agree with `nmap -sS` on 21
-ports and `nmap -sU` on 22 ports. The capture benchmark found that the
-unfiltered `recvmsg` path lost replies under load (see Measurements). The
-bridge lab found that UDP pacing under a global rate cap spun forever,
-because the token bucket dropped fractions of a token at 1 probe per
-second; a simulation test now covers it.
+ports and `nmap -sU` on 22 ports. The bridge lab found that UDP pacing
+under a global rate cap spun forever, because the token bucket dropped
+fractions of a token at 1 probe per second; a simulation test now covers
+it.
 
 ## Measurements
 
@@ -155,9 +156,13 @@ These are the only performance figures. They come from loopback inside a
 Linux container on Apple silicon, so they measure Zigmap's own overhead,
 not a real network.
 
-* Connect scan, 65,535 closed ports, `--max-parallelism 1024 --max-rate 0`, ReleaseSafe,
-  10 runs: 131 to 147 ms wall, about 20 ms user and 110 ms system CPU, about
-  5 MB peak RSS.
+* Connect scan of 65,535 closed ports on 127.0.0.1 in an Alpine container,
+  `zigmap -p - --max-parallelism 1024 --max-rate 0 --stats 127.0.0.1`,
+  ReleaseSafe, 10 runs: 131 to 147 ms wall, about 20 ms user and 110 ms
+  system CPU, about 5 MB peak RSS. These runs also found TCP self-connect
+  on loopback: when the ephemeral source port equals the target port, the
+  connection succeeds against itself. Zigmap detects this with
+  `getsockname`, records it as inconclusive and retries.
 * Timer heap against a linear sweep (`zig build bench`): the sweep is faster
   at 64 timers, they tie at 256, the heap is 4.9× faster at 1,024 and 39×
   at 16,384.
@@ -182,11 +187,6 @@ not a real network.
   `PACKET_IGNORE_OUTGOING`, the unfiltered `recvmsg` path took 38 s,
   dropped 2.5 million frames and gave wrong results; Zigmap now also warns
   whenever the kernel reports capture loss.
-
-That connect benchmark also found TCP self-connect on loopback: when the
-ephemeral source port equals the target port, the connection succeeds
-against itself. Zigmap detects this with `getsockname`, records it as
-inconclusive and retries.
 
 ## Layout
 

@@ -20,8 +20,6 @@ pub const Features = struct {
     options_len: u8 = 0,
     mss: ?u16 = null,
     wscale: ?u8 = null,
-    sack: bool = false,
-    timestamps: bool = false,
     rst_window: ?u16 = null,
     rst_df: ?bool = null,
     rst_initial_ttl: ?u8 = null,
@@ -52,8 +50,6 @@ pub fn extract(synack: ?raw.ReplyFacts, rst: ?raw.ReplyFacts) Features {
         f.options_len = n;
         f.mss = o.mss;
         f.wscale = o.window_scale;
-        f.sack = o.sack_permitted;
-        f.timestamps = o.ts_val != null;
     }
     if (rst) |r| {
         f.have_rst = true;
@@ -209,6 +205,30 @@ pub fn classify(f: Features) Verdict {
     return v;
 }
 
+fn describe(f: *const Features, v: *Verdict) void {
+    var w: std.Io.Writer = .fixed(&v.observed);
+    if (f.have_synack) {
+        w.print("synack ttl={d}(init {d}) df={d} win={d}", .{ f.observed_ttl, f.initial_ttl, @intFromBool(f.df), f.window }) catch {};
+        if (f.wscale) |ws| w.print(" ws={d}", .{ws}) catch {};
+        if (f.mss) |m| w.print(" mss={d}", .{m}) catch {};
+        w.writeAll(" opts=") catch {};
+        for (f.optionKinds(), 0..) |k, i| {
+            if (i > 0) w.writeByte(',') catch {};
+            w.writeAll(switch (k) {
+                0 => "EOL",
+                1 => "NOP",
+                2 => "MSS",
+                3 => "WS",
+                4 => "SACK",
+                8 => "TS",
+                else => "?",
+            }) catch {};
+        }
+    } else w.writeAll("no synack") catch {};
+    if (f.have_rst) w.print("; rst win={d} df={d} init_ttl={d}", .{ f.rst_window.?, @intFromBool(f.rst_df.?), f.rst_initial_ttl.? }) catch {};
+    v.observed_len = @intCast(w.buffered().len);
+}
+
 const testing = std.testing;
 
 fn facts(ttl: u8, df: bool, window: u16, opts: []const u8) raw.ReplyFacts {
@@ -255,28 +275,4 @@ test "initial TTL inference" {
     try testing.expectEqual(@as(u8, 64), initialTtl(53));
     try testing.expectEqual(@as(u8, 128), initialTtl(113));
     try testing.expectEqual(@as(u8, 255), initialTtl(240));
-}
-
-fn describe(f: *const Features, v: *Verdict) void {
-    var w: std.Io.Writer = .fixed(&v.observed);
-    if (f.have_synack) {
-        w.print("synack ttl={d}(init {d}) df={d} win={d}", .{ f.observed_ttl, f.initial_ttl, @intFromBool(f.df), f.window }) catch {};
-        if (f.wscale) |ws| w.print(" ws={d}", .{ws}) catch {};
-        if (f.mss) |m| w.print(" mss={d}", .{m}) catch {};
-        w.writeAll(" opts=") catch {};
-        for (f.optionKinds(), 0..) |k, i| {
-            if (i > 0) w.writeByte(',') catch {};
-            w.writeAll(switch (k) {
-                0 => "EOL",
-                1 => "NOP",
-                2 => "MSS",
-                3 => "WS",
-                4 => "SACK",
-                8 => "TS",
-                else => "?",
-            }) catch {};
-        }
-    } else w.writeAll("no synack") catch {};
-    if (f.have_rst) w.print("; rst win={d} df={d} init_ttl={d}", .{ f.rst_window.?, @intFromBool(f.rst_df.?), f.rst_initial_ttl.? }) catch {};
-    v.observed_len = @intCast(w.buffered().len);
 }

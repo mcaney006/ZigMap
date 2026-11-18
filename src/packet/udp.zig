@@ -55,7 +55,7 @@ pub fn encode(src_port: u16, dst_port: u16, payload: []const u8, pseudo: u32, ou
 pub fn verify(datagram: []const u8, pseudo: u32, is_ipv6: bool) bool {
     if (datagram.len < header_len) return false;
     if (!is_ipv6 and datagram[6] == 0 and datagram[7] == 0) return true;
-    return checksum.finish(checksum.add(pseudo, datagram)) == 0;
+    return checksum.verifyWithPseudo(pseudo, datagram);
 }
 
 test "udp round trip" {
