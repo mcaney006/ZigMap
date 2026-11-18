@@ -20,7 +20,6 @@ pub const ConnectTransport = struct {
     gens: []u32,
     dests: []Dest,
     poller: sys.Poller,
-    connect_errors: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, slots: u32) !ConnectTransport {
         const fds = try gpa.alloc(sys.fd_t, slots);

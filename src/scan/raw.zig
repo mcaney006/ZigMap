@@ -31,7 +31,6 @@ pub const Slot = struct {
     dport: u16 = 0,
     gen: u32 = 0,
     kind: Kind = .tcp_syn,
-    armed: bool = false,
     /// Ever armed: late replies for the current occupant stay recognisable.
     used: bool = false,
 };
@@ -52,6 +51,8 @@ pub const CaptureStats = struct {
     kernel_drops: u64 = 0,
     /// Ring blocks the kernel flagged TP_STATUS_LOSING (frames were dropped).
     ring_losing_blocks: u64 = 0,
+    /// Matched replies lost because the transport backlog was full.
+    events_dropped: u64 = 0,
 };
 
 pub const Match = struct { slot: u32, gen: u32, reason: Reason };
@@ -103,12 +104,8 @@ pub const Correlator = struct {
     }
 
     pub fn arm(c: *Correlator, slot: u32, gen: u32, kind: Kind, dst: Addr, dport: u16) u32 {
-        c.slots[slot] = .{ .dst = dst, .dport = dport, .gen = gen, .kind = kind, .armed = true, .used = true };
+        c.slots[slot] = .{ .dst = dst, .dport = dport, .gen = gen, .kind = kind, .used = true };
         return c.token(dst, dport, c.sport(slot), gen);
-    }
-
-    pub fn disarm(c: *Correlator, slot: u32) void {
-        c.slots[slot].armed = false;
     }
 
     fn slotFor(c: *const Correlator, port: u16) ?u32 {
@@ -210,8 +207,14 @@ pub const Correlator = struct {
         const s = &c.slots[slot];
         if (!s.used or s.kind != .udp) return c.reject("not_ours");
         if (!srcIs(p, s.dst) or u.header.src_port != s.dport) return c.reject("foreign_occupant");
-        if (u.checksum == .bad) return c.reject("bad_checksum");
-        if (u.checksum == .partial and !nr) return c.reject("bad_checksum");
+        // Unlike TCP and ICMP, a UDP checksum of zero is legal (unverified).
+        switch (u.checksum) {
+            .good, .unverified => {},
+            .partial => if (nr) {
+                c.stats.partial_checksum_accepted += 1;
+            } else return c.reject("bad_checksum"),
+            .bad => return c.reject("bad_checksum"),
+        }
         c.stats.matched_udp += 1;
         return .{ .slot = slot, .gen = s.gen, .reason = .udp_reply };
     }
@@ -249,7 +252,9 @@ pub const Correlator = struct {
                 // IPv4 quotes carry our IP ID; IPv6 has no equivalent field.
                 gen = if (q.is_ipv6) s.gen else c.genFor(s, slot, q.ip_id, 16);
             },
-            else => {},
+            // Discovery reads only the echo reply, SYN/ACK or RST; ICMP errors
+            // about its ACK and echo probes are not used.
+            .tcp_ack, .icmp_echo => return c.reject("not_ours"),
         }
         const g = gen orelse return c.reject("token_mismatch");
         c.stats.matched_icmp += 1;
@@ -309,16 +314,16 @@ pub fn build(spec: ProbeSpec, link: ?Link, out: []u8) !usize {
         .udp => packet.ipv4.Protocol.udp,
         .icmp_echo => if (spec.dst.is_v6) packet.ipv4.Protocol.icmpv6 else packet.ipv4.Protocol.icmp,
     };
-    const seg_len_guess: usize = switch (spec.kind) {
+    const expected_seg_len: usize = switch (spec.kind) {
         .tcp_syn => 40,
         .tcp_ack => 20,
         .udp => 8 + spec.payload.len,
         .icmp_echo => 8 + spec.payload.len,
     };
     const pseudo: u32 = if (spec.dst.is_v6)
-        packet.checksum.pseudoV6(spec.src.bytes, spec.dst.bytes, proto, @intCast(seg_len_guess))
+        packet.checksum.pseudoV6(spec.src.bytes, spec.dst.bytes, proto, @intCast(expected_seg_len))
     else
-        packet.checksum.pseudoV4(spec.src.bytes4(), spec.dst.bytes4(), proto, @intCast(seg_len_guess));
+        packet.checksum.pseudoV4(spec.src.bytes4(), spec.dst.bytes4(), proto, @intCast(expected_seg_len));
     const seg_len: usize = switch (spec.kind) {
         .tcp_syn => blk: {
             // A conventional client option set (MSS, SACK, TS, NOP, WS) so the
@@ -338,7 +343,7 @@ pub fn build(spec: ProbeSpec, link: ?Link, out: []u8) !usize {
             &seg_buf,
         ),
     };
-    std.debug.assert(seg_len == seg_len_guess);
+    std.debug.assert(seg_len == expected_seg_len);
     if (spec.dst.is_v6) {
         if (link != null) off += try packet.ipv6.encode(.{ .next_header = proto, .hop_limit = spec.hop_limit, .src = spec.src.bytes, .dst = spec.dst.bytes }, seg_len, out[off..]);
     } else {
@@ -502,7 +507,7 @@ test "UDP: reply, ICMPv4 port unreachable with IP ID token, ICMPv6 port unreacha
     const n6 = try build(.{ .kind = .udp, .src = me6, .dst = tg6, .sport = c.sport(6), .dport = 53, .token = tok6 }, test_link, &p6);
     const m6 = c.match(&(try parser.parse(.ethernet, icmpQuoting(&b, p6[14..n6], true, 1, 4))), false).?;
     try testing.expectEqual(Reason.icmp_port_unreach, m6.reason);
-    _ = c.match(&(try parser.parse(.ethernet, icmpQuoting(&b, p6[14..n6], true, 1, 1))), false).?;
+    try testing.expectEqual(Reason.icmp_admin_prohibited, c.match(&(try parser.parse(.ethernet, icmpQuoting(&b, p6[14..n6], true, 1, 1))), false).?.reason);
 }
 
 test "ICMP echo reply matches id and token" {

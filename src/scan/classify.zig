@@ -6,13 +6,13 @@ const Classification = @import("../core/engine.zig").Classification;
 /// TCP connect(): the kernel performs the handshake, so success proves the
 /// port accepted a connection and ECONNREFUSED proves an RST came back.
 /// Unreachability reported by the kernel means something on the path
-/// answered for the target: filtered, never closed.
+/// answered for the target: filtered, never closed. Anything else,
+/// including a self-connect, is inconclusive and retried.
 pub fn connect(r: ps.Reason) Classification {
     return switch (r) {
         .connected => .{ .state = .open, .definitive = true },
         .conn_refused => .{ .state = .closed, .definitive = true },
         .host_unreach, .net_unreach, .local_policy_denied, .kernel_timeout => .{ .state = .filtered, .definitive = true },
-        .self_connect => .{ .state = .unknown, .definitive = false },
         else => .{ .state = .unknown, .definitive = false },
     };
 }

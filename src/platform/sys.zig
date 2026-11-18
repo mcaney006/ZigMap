@@ -55,8 +55,8 @@ fn mapErrno(e: anytype) Err {
 }
 
 fn errFromCode(code: i32) Err {
-    if (is_linux) return mapErrno(@as(linux.E, @enumFromInt(code)));
-    return mapErrno(@as(c.E, @enumFromInt(code)));
+    if (is_linux) return mapErrno(@as(linux.E, @fromBackingInt(@intCast(code))));
+    return mapErrno(@as(c.E, @fromBackingInt(@intCast(code))));
 }
 
 pub fn SysResult(comptime T: type) type {

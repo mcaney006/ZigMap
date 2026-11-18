@@ -59,8 +59,8 @@ pub const Netlink = struct {
                     msg.NLMSG_ERROR => {
                         const code = msg.errorCode(m.payload) orelse return error.Malformed;
                         if (code == 0) return; // ACK
-                        if (code == -@as(i32, @intFromEnum(linux.E.NETUNREACH)) or code == -@as(i32, @intFromEnum(linux.E.HOSTUNREACH))) return error.NoRoute;
-                        if (code == -@as(i32, @intFromEnum(linux.E.NODEV))) return error.NoSuchInterface;
+                        if (code == -@as(i32, @backingInt(linux.E.NETUNREACH)) or code == -@as(i32, @backingInt(linux.E.HOSTUNREACH))) return error.NoRoute;
+                        if (code == -@as(i32, @backingInt(linux.E.NODEV))) return error.NoSuchInterface;
                         return error.KernelError;
                     },
                     else => {

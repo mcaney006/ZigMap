@@ -48,12 +48,12 @@ match imap probe=NULL prefix="* OK" contains="IMAP" confidence=medium
 # --- MySQL greeting: protocol 10, then a NUL-terminated version string
 match mysql probe=NULL contains="\x0a" contains="mysql_native_password" capture="\x0a" stop="\x00" as=version product="MySQL" confidence=medium
 
-# --- Redis answers inline commands with -ERR or +PONG; a bare banner is rare
-match redis probe=NULL prefix="-NOAUTH" confidence=medium
+# --- Redis in protected mode writes -DENIED as soon as it accepts a
+# connection from another host; otherwise it waits for a command.
+match redis probe=NULL prefix="-DENIED Redis" confidence=medium
 
 # --- HTTP (Server header)
 match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: nginx" capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=high
 match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: Apache" capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=high
 match http probe=HTTPGet prefix="HTTP/1." contains="\r\nServer: " capture="\r\nServer: " stop=" \r\n" split="/" as=product-version confidence=medium
 match http probe=HTTPGet prefix="HTTP/1." confidence=medium
-match http probe=HTTPGet prefix="HTTP/2" confidence=low

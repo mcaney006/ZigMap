@@ -262,24 +262,14 @@ pub const Identity = struct {
         return i.extra[0..i.extra_len];
     }
 
-    fn setText(buf: []u8, len: *u8, s: []const u8) void {
-        var n: usize = 0;
-        for (s) |c| {
-            if (n == buf.len) break;
-            // keep output printable and JSON/XML-safe
-            buf[n] = if (c >= 0x20 and c < 0x7f and c != '"' and c != '\\' and c != '<' and c != '>' and c != '&') c else '?';
-            n += 1;
-        }
-        len.* = @intCast(n);
-    }
     pub fn setProduct(i: *Identity, s: []const u8) void {
-        setText(&i.product, &i.product_len, s);
+        sanitize(&i.product, &i.product_len, s);
     }
     pub fn setVersion(i: *Identity, s: []const u8) void {
-        setText(&i.version, &i.version_len, s);
+        sanitize(&i.version, &i.version_len, s);
     }
     pub fn setExtra(i: *Identity, s: []const u8) void {
-        setText(&i.extra, &i.extra_len, s);
+        sanitize(&i.extra, &i.extra_len, s);
     }
 };
 
@@ -366,10 +356,11 @@ pub const TlsInfo = struct {
     san_count: u16 = 0,
     first_san: [max_field]u8 = undefined,
     first_san_len: u8 = 0,
-    complete: bool = false,
 };
 
-fn copyField(dst: []u8, len: *u8, src: []const u8) void {
+/// Copies `src` into `dst` (truncating) as printable ASCII that is safe in
+/// JSON and XML: other bytes become '?'.
+fn sanitize(dst: []u8, len: *u8, src: []const u8) void {
     const n = @min(src.len, dst.len);
     for (src[0..n], 0..) |c, i| dst[i] = if (c >= 0x20 and c < 0x7f and c != '"' and c != '\\' and c != '<' and c != '>' and c != '&') c else '?';
     len.* = @intCast(n);
@@ -423,7 +414,6 @@ pub fn parseServerFlight(data: []const u8) TlsInfo {
                 const clen = std.mem.readInt(u24, m[3..6], .big);
                 if (6 + clen <= m.len) parseLeaf(&info, m[6..][0..clen]);
             },
-            14 => info.complete = true, // ServerHelloDone
             else => {},
         }
         h += 4 + len;
@@ -434,8 +424,8 @@ pub fn parseServerFlight(data: []const u8) TlsInfo {
 fn parseLeaf(info: *TlsInfo, der: []const u8) void {
     const cert: std.crypto.Certificate = .{ .buffer = der, .index = 0 };
     const p = cert.parse() catch return;
-    copyField(&info.cert_cn, &info.cert_cn_len, p.commonName());
-    if (cnFromName(p.issuer())) |icn| copyField(&info.issuer_cn, &info.issuer_cn_len, icn);
+    sanitize(&info.cert_cn, &info.cert_cn_len, p.commonName());
+    if (cnFromName(p.issuer())) |icn| sanitize(&info.issuer_cn, &info.issuer_cn_len, icn);
     info.not_after = p.validity.not_after;
     const san = p.subjectAltName();
     // SEQUENCE of GeneralName; dNSName is [2] IMPLICIT IA5String (tag 0x82).
@@ -447,7 +437,7 @@ fn parseLeaf(info: *TlsInfo, der: []const u8) void {
             const l = san[i + 1];
             if (l >= 0x80 or i + 2 + l > san.len) break;
             if (tag == 0x82) {
-                if (info.san_count == 0) copyField(&info.first_san, &info.first_san_len, san[i + 2 ..][0..l]);
+                if (info.san_count == 0) sanitize(&info.first_san, &info.first_san_len, san[i + 2 ..][0..l]);
                 info.san_count += 1;
             }
             i += 2 + l;
@@ -470,9 +460,12 @@ pub fn tlsVersionName(v: u16) []const u8 {
 
 pub const dns_query_id: u16 = 0x7a6d;
 
+/// Standard query, id `dns_query_id`, for "version.bind" TXT in class CH.
+pub const dns_version_query = "\x7a\x6d\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03";
+
 /// version.bind TXT CH query. `tcp` prepends the RFC 1035 length field.
 pub fn buildDnsVersionQuery(tcp: bool, out: []u8) []const u8 {
-    const q = "\x7a\x6d\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03";
+    const q = dns_version_query;
     var n: usize = 0;
     if (tcp) {
         std.mem.writeInt(u16, out[0..2], q.len, .big);
@@ -528,7 +521,7 @@ pub fn parseDnsResponse(msg_in: []const u8, tcp: bool) DnsInfo {
     if (typ != 16 or i + rdlen > msg.len or rdlen < 1) return info;
     const tl = msg[i];
     if (1 + @as(usize, tl) > rdlen) return info;
-    copyField(&info.version, &info.version_len, msg[i + 1 ..][0..tl]);
+    sanitize(&info.version, &info.version_len, msg[i + 1 ..][0..tl]);
     return info;
 }
 
@@ -602,7 +595,6 @@ test "server flight parsing: ServerHello, alert, truncation" {
     const i = parseServerFlight(&sh);
     try testing.expectEqual(@as(?u16, 0x0303), i.server_version);
     try testing.expectEqual(@as(?u16, 0xc02f), i.cipher);
-    try testing.expect(i.complete);
     const alert = [_]u8{ 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x46 };
     try testing.expectEqual(@as(?u8, 0x46), parseServerFlight(&alert).alert);
     _ = parseServerFlight(sh[0..20]);

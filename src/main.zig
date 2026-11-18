@@ -382,8 +382,8 @@ fn writeTo(ctx: *Ctx, path: []const u8, view: report.View, which: Format) !bool 
 /// "open|filtered" results can be wrong. Always said, not only with --stats.
 fn warnCaptureLoss(ctx: *Ctx, capture: ?zigmap.scan.raw.CaptureStats) !void {
     const c = capture orelse return;
-    if (c.kernel_drops == 0 and c.ring_losing_blocks == 0) return;
-    try ctx.errw.print("warning: the capture lost frames (kernel drops {d}, lossy ring blocks {d}); replies may be missing, so filtered results are not reliable. Keep the BPF filter on (do not pass --no-bpf), try --capture ring, or lower --max-rate.\n", .{ c.kernel_drops, c.ring_losing_blocks });
+    if (c.kernel_drops == 0 and c.ring_losing_blocks == 0 and c.events_dropped == 0) return;
+    try ctx.errw.print("warning: the capture lost frames (kernel drops {d}, lossy ring blocks {d}, replies dropped {d}); replies may be missing, so filtered results are not reliable. Keep the BPF filter on (do not pass --no-bpf), try --capture ring, or lower --max-rate.\n", .{ c.kernel_drops, c.ring_losing_blocks, c.events_dropped });
     try ctx.errw.flush();
 }
 

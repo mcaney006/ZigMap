@@ -2,8 +2,8 @@
 //! open ports, multiplexed with poll() on one thread.
 //!
 //! Probe order per port: probes whose port list names this port first
-//! (by rarity), then the NULL banner probe, then generic fallbacks up to
-//! the intensity. Each exchange is capped in bytes and time. The first
+//! (by rarity), then the NULL banner probe, then probes listed for other
+//! ports, up to the intensity. Each exchange is capped in bytes and time. The first
 //! confident match wins; otherwise the port stays "unknown", with a short
 //! sanitised banner excerpt as evidence.
 
@@ -59,7 +59,7 @@ fn planFor(db: *const svc.Db, port: u16, intensity: u8) Plan {
         p.probes[p.n] = nul;
         p.n += 1;
     };
-    // 3. generic fallbacks
+    // 3. probes listed for other ports
     for (db.probes) |*pr| {
         if (p.n == max_probes_per_port) break;
         if (pr.ports == null or pr.appliesTo(port) or pr.rarity > intensity or pr.transport != .tcp) continue;
@@ -97,8 +97,8 @@ fn evaluate(db: *const svc.Db, c: *const Conn) ?svc.Identity {
                 if (t.issuer_cn_len > 0) w.print(" issuer={s}", .{t.issuer_cn[0..t.issuer_cn_len]}) catch {};
                 if (t.san_count > 0) w.print(" san={d}({s})", .{ t.san_count, t.first_san[0..t.first_san_len] }) catch {};
                 if (t.not_after) |na| {
-                    var db_: [16]u8 = undefined;
-                    w.print(" not_after={s}", .{formatDate(na, &db_)}) catch {};
+                    var date_buf: [16]u8 = undefined;
+                    w.print(" not_after={s}", .{formatDate(na, &date_buf)}) catch {};
                 }
             } else {
                 // A TLS alert to a TLS 1.2 hello still proves a TLS service.
@@ -162,6 +162,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, db: *const svc.Db, tasks: []const
             const fd = switch (sys.tcpSocket(tasks[ti].addr.is_v6)) {
                 .ok => |fd| fd,
                 .err => {
+                    // Out of sockets: put the probe back and retry it later.
+                    p.next -= 1;
                     try free_conns.append(gpa, ci);
                     break;
                 },
@@ -259,10 +261,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, db: *const svc.Db, tasks: []const
             sys.abortClose(c.fd);
             _ = active.swapRemove(k);
             try free_conns.append(gpa, ci);
-            if (!p.done and p.next == p.n and !isActive(conns, active.items, c.task)) {
-                p.done = true;
-                remaining -= 1;
-            }
+            if (!isActive(conns, active.items, c.task) and finishAttempt(p)) remaining -= 1;
         }
     }
     for (ids, 0..) |*id, i| if (!id.matched and banner_len[i] > 0) id.setExtra(banners[i][0..banner_len[i]]);
