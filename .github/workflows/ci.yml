@@ -29,3 +29,6 @@ jobs:
         with:
           version: 0.17.1
       - run: zig build test --summary all
+      # The lab helper is Linux only; cross-compile it on every runner so the
+      # Docker labs never meet a labtool that no longer builds.
+      - run: zig build lab-tools -Dtarget=x86_64-linux --summary all

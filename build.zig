@@ -69,9 +69,22 @@ pub fn build(b: *std.Build) void {
         release.dependOn(&install.step);
     }
 
+    // Lab-only helpers (service fakes, listeners, UDP noise) for tests/lab
+    // and tests/bench. Linux only; never part of the default install.
+    const labtool_mod = b.createModule(.{
+        .root_source_file = b.path("tests/lab/labtool.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const labtool = b.addExecutable(.{ .name = "labtool", .root_module = labtool_mod });
+    b.step("lab-tools", "Build the Linux lab helper (labtool) into the install prefix").dependOn(&b.addInstallArtifact(labtool, .{}).step);
+
     const lib_tests = b.addTest(.{ .root_module = zigmap });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const test_step = b.step("test", "Run unit, golden-vector and simulation tests");
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    if (target.result.os.tag == .linux) {
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = labtool_mod })).step);
+    }
 }

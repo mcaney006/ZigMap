@@ -1,7 +1,7 @@
 #!/bin/sh
 # Isolated-namespace lab for the TCP connect scanner. Runs INSIDE a
 # throwaway container (see tests/lab/run.sh), touching only that
-# container's loopback. Lab tooling (iptables, tc, python listeners, nmap
+# container's loopback. Lab tooling (iptables, tc, labtool listeners, nmap
 # as a differential oracle) shapes the environment; it never performs the
 # scan under test.
 set -eu
@@ -20,15 +20,7 @@ if readelf -l "$ZM" | grep -q INTERP; then echo "  FAIL has PT_INTERP"; fail=1; 
 if readelf -d "$ZM" 2>&1 | grep -q "no dynamic section"; then echo "  ok   no dynamic section (libc not linked)"; else echo "  FAIL dynamic section present"; fail=1; fi
 
 echo "== lab setup"
-python3 - <<'PY' &
-import socket, time
-socks = []
-for fam, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-    for p in (20001, 20002):
-        s = socket.socket(fam); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((host, p)); s.listen(128); socks.append(s)
-time.sleep(600)
-PY
+"${LABTOOL:-/zm/labtool}" listen tcp:127.0.0.1:20001 tcp:127.0.0.1:20002 tcp:[::1]:20001 tcp:[::1]:20002 &
 LISTENER=$!
 iptables -A INPUT -i lo -p tcp --dport 20010 -j DROP
 iptables -A INPUT -i lo -p tcp --dport 20011 -j REJECT --reject-with icmp-host-unreachable
@@ -48,13 +40,11 @@ check 20012 closed/conn_refused "$(state_of /tmp/s1.jsonl 20012)"
 check 20013 filtered/host_unreach "$(state_of /tmp/s1.jsonl 20013)"
 attempts=$(grep '"port":20010,' /tmp/s1.jsonl | sed 's/.*"attempts":\([0-9]*\).*/\1/')
 check "20010 attempts" 2 "$attempts"
-python3 -c "
-import json,sys
-n=0
-for line in open('/tmp/s1.jsonl'):
-    o=json.loads(line); assert o['schema']=='zigmap.v1'; n+=1
-print('  ok   JSONL: %d valid records' % n)
-" || fail=1
+if jq -e -s 'length > 0 and all(.[]; .schema == "zigmap.v1")' /tmp/s1.jsonl >/dev/null; then
+	echo "  ok   JSONL: $(jq -s length /tmp/s1.jsonl) valid records (jq)"
+else
+	echo "  FAIL JSONL records"; fail=1
+fi
 
 echo "== scan 2: differential vs nmap -sT (oracle only)"
 nmap -sT -Pn -n -p $PORTS --max-retries 1 127.0.0.1 -oG - 2>/dev/null | tr ',' '\n' | sed -n 's#.* \{0,1\}\([0-9]\{5\}\)/\([a-z|]*\)/tcp.*#\1 \2#p' | sort >/tmp/nmap.txt

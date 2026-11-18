@@ -573,9 +573,10 @@ test "banner matching with provenance" {
     const http = match(&db, "HTTPGet", "HTTP/1.1 200 OK\r\nServer: nginx/1.25.3\r\n\r\n").?;
     try testing.expectEqualStrings("nginx", http.productSlice());
     try testing.expectEqualStrings("1.25.3", http.versionSlice());
-    const py = match(&db, "HTTPGet", "HTTP/1.0 200 OK\r\nServer: SimpleHTTP/0.6 Python/3.12.3\r\n").?;
-    try testing.expectEqualStrings("SimpleHTTP", py.productSlice());
-    try testing.expectEqual(Confidence.medium, py.confidence);
+    const generic = match(&db, "HTTPGet", "HTTP/1.0 200 OK\r\nServer: lighttpd/1.4.76 extra\r\n").?;
+    try testing.expectEqualStrings("lighttpd", generic.productSlice());
+    try testing.expectEqualStrings("1.4.76", generic.versionSlice());
+    try testing.expectEqual(Confidence.medium, generic.confidence);
     // a probe-specific rule never fires for another probe's response
     try testing.expectEqual(@as(?Identity, null), match(&db, "NULL", "HTTP/1.1 200 OK\r\n"));
     // unknown stays unknown
