@@ -40,6 +40,11 @@ ARCH=aarch64 sh tests/lab/syn_lab.sh        # two containers on Docker bridges
 ARCH=aarch64 sh tests/bench/capture_bench.sh
 ```
 
+GitHub Actions runs `zig build test` on Linux and macOS for every pull
+request and every push to `main` (`.github/workflows/ci.yml`). The labs
+and benchmarks need Docker and root inside containers, so they run
+locally, not in CI.
+
 The labs need Docker and run only inside throwaway containers and networks.
 They never touch the host's routing, ARP, DNS or firewall.
 
