@@ -19,7 +19,7 @@ TARGET_B=$PFXB.10
 SCANNER_IP=$PFX.20
 SILENT_IP=$PFX.99
 cd "$ROOT"
-zig build -Dtarget=$ARCH-linux -Doptimize=ReleaseSafe --prefix "zig-out/$ARCH-linux"
+zig build install lab-tools -Dtarget=$ARCH-linux -Doptimize=ReleaseSafe --prefix "zig-out/$ARCH-linux"
 
 cleanup() {
 	docker rm -f zm-target-$$ >/dev/null 2>&1 || true
@@ -34,29 +34,20 @@ docker network create --subnet $PFXB.0/24 $NETB >/dev/null
 TARGET_V6_ARGS=""
 [ $V6 -eq 1 ] && TARGET_V6_ARGS="--ip6 ${V6PFX}10"
 docker create --name zm-target-$$ --platform $PLATFORM --network $NET --ip $TARGET_IP $TARGET_V6_ARGS --cap-add NET_ADMIN \
-	-v "$ROOT/tests/lab/services:/svc:ro" alpine:3.20 sh -c '
-apk add -q python3 iptables ip6tables openssl >/dev/null
+	-v "$ROOT/zig-out/$ARCH-linux/bin:/zm:ro" alpine:3.20 sh -c '
+apk add -q iptables ip6tables openssl >/dev/null
 openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/key.pem -out /tmp/cert.pem -days 30 -subj /CN=lab.zigmap.test -addext subjectAltName=DNS:lab.zigmap.test 2>/dev/null
 iptables -A INPUT -p tcp --dport 20010 -j DROP
 iptables -A INPUT -p tcp --dport 20011 -j REJECT --reject-with icmp-host-unreachable
 iptables -A INPUT -p tcp --dport 20012 -j REJECT --reject-with tcp-reset
 iptables -A INPUT -p tcp --dport 20013 -j REJECT --reject-with icmp-admin-prohibited
 iptables -A INPUT -p udp --dport 20010 -j DROP
-python3 -c "
-import socket,time,threading
-ss=[]
-for p in (20001,20002):
-  s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind((\"0.0.0.0\",p)); s.listen(128); ss.append(s)
-try:
-  s6=socket.socket(socket.AF_INET6); s6.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s6.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1); s6.bind((\"::\",20001)); s6.listen(64); ss.append(s6)
-except Exception: pass
-u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); u.bind((\"0.0.0.0\",20053))
-def echo():
-  while True:
-    d,a=u.recvfrom(2048); u.sendto(b\"pong\",a)
-threading.Thread(target=echo,daemon=True).start()
-time.sleep(1200)" &
-exec python3 /svc/serve.py 0.0.0.0' >/dev/null
+V6L=""
+[ -e /proc/net/if_inet6 ] && V6L="tcp6only:[::]:20001"
+/zm/labtool listen tcp:0.0.0.0:20001 tcp:0.0.0.0:20002 udp-echo:0.0.0.0:20053 $V6L &
+openssl s_server -www -quiet -accept 8443 -cert /tmp/cert.pem -key /tmp/key.pem </dev/null >/dev/null 2>&1 &
+/zm/labtool wait-tcp 127.0.0.1 8443
+exec /zm/labtool serve 0.0.0.0' >/dev/null
 docker network connect --ip $TARGET_B $NETB zm-target-$$
 docker start zm-target-$$ >/dev/null
 i=0; until docker exec zm-target-$$ test -f /tmp/ready 2>/dev/null; do i=$((i+1)); [ $i -gt 150 ] && { echo "target never became ready"; exit 1; }; sleep 1; done
@@ -68,7 +59,7 @@ docker run --rm --platform $PLATFORM --network $NET --ip $SCANNER_IP $SCANNER_V6
 	-e T=$TARGET_IP -e TB=$TARGET_B -e PFXB=$PFXB -e SILENT=$SILENT_IP -e V6=$V6 -e T6=${V6PFX}10 \
 	-v "$ROOT/zig-out/$ARCH-linux/bin:/zm:ro" alpine:3.20 sh -c '
 set -u
-apk add -q nmap iproute2-tc python3 >/dev/null
+apk add -q nmap iproute2-tc jq libxml2-utils >/dev/null
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1: $3"; else echo "  FAIL $1: expected $2 got $3"; fail=1; fi; }
 st() { grep "\"type\":\"port\"" "$1" | grep "\"port\":$2," | sed "s/.*\"state\":\"\([^\"]*\)\",\"reason\":\"\([^\"]*\)\".*/\1\/\2/"; }
@@ -104,12 +95,12 @@ check "53 service" "domain  9.18-lab" "$(svcname /tmp/v.jsonl 53)"
 check "2121 service" "ftp vsftpd 3.0.5" "$(svcname /tmp/v.jsonl 2121)"
 check "2222 service" "ssh OpenSSH 9.6p1" "$(svcname /tmp/v.jsonl 2222)"
 check "2525 service" "smtp Postfix " "$(svcname /tmp/v.jsonl 2525)"
-check "8080 service" "http SimpleHTTP 0.6" "$(svcname /tmp/v.jsonl 8080)"
+check "8080 service" "http zigmap-lab 1.0" "$(svcname /tmp/v.jsonl 8080)"
 check "8443 service" "ssl/tls TLS1.2 " "$(svcname /tmp/v.jsonl 8443)"
 grep -q "cn=lab.zigmap.test" /tmp/v.jsonl && echo "  ok   TLS certificate CN extracted" || { echo "  FAIL TLS CN"; fail=1; }
 case "$(oskey /tmp/v.jsonl)" in "strong Linux"*|"probable Linux"*) echo "  ok   OS: $(oskey /tmp/v.jsonl)";; *) echo "  FAIL OS: $(oskey /tmp/v.jsonl)"; fail=1;; esac
-python3 -c "import json; d=json.load(open(\"/tmp/v.json\")); assert d[\"schema\"]==\"zigmap.v1\" and len(d[\"hosts\"])==1" && echo "  ok   --json document parses"  || fail=1
-python3 -c "import xml.etree.ElementTree as E; r=E.parse(\"/tmp/v.xml\").getroot(); assert r.tag==\"zigmaprun\" and len(r.findall(\"host/port\"))==7" && echo "  ok   -oX document parses" || fail=1
+jq -e ".schema == \"zigmap.v1\" and (.hosts | length) == 1" /tmp/v.json >/dev/null && echo "  ok   --json document parses (jq)" || { echo "  FAIL --json document"; fail=1; }
+check "-oX document parses (xmllint), ports under /zigmaprun/host" 7 "$(xmllint --xpath "count(/zigmaprun/host/port)" /tmp/v.xml 2>&1)"
 
 echo "== UDP scan (target kernel rate-limits ICMP unreachables)"
 /zm/zigmap -sU -p 20000-20020,20053 --max-retries 2 --initial-rtt-timeout 300 --stats -oJ /tmp/u.jsonl $T >/tmp/u.txt

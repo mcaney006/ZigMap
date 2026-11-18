@@ -12,16 +12,9 @@ RUNS=${RUNS:-5}
 case $ARCH in aarch64) PLATFORM=linux/arm64 ;; x86_64) PLATFORM=linux/amd64 ;; *) exit 2 ;; esac
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
-zig build -Dtarget=$ARCH-linux -Doptimize=ReleaseFast --prefix "zig-out/$ARCH-linux-fast"
+zig build install lab-tools -Dtarget=$ARCH-linux -Doptimize=ReleaseFast --prefix "zig-out/$ARCH-linux-fast"
 docker run --rm --platform $PLATFORM -e RUNS=$RUNS -e MODES="${MODES:-recvmsg,no-bpf recvmsg ring,no-bpf ring}" -v "$ROOT/zig-out/$ARCH-linux-fast/bin:/zm:ro" alpine:3.20 sh -c '
-apk add -q python3 >/dev/null
-noise() { python3 -c "
-import socket
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind((\"127.0.0.3\",0))
-p=b\"x\"*64
-while True:
-  for _ in range(1000): s.sendto(p,(\"127.0.0.2\",9))
-" & }
+noise() { /zm/labtool udp-noise 127.0.0.3 127.0.0.2 9 & }
 noise; noise
 sleep 1
 median() { sort -n | awk "{a[NR]=\$1} END{print a[int((NR+1)/2)]}"; }

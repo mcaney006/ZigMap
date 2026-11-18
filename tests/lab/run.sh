@@ -11,7 +11,7 @@ case $ARCH in
 	*) echo "unknown ARCH $ARCH" >&2; exit 2 ;;
 esac
 cd "$ROOT"
-zig build -Dtarget=$ARCH-linux -Doptimize=ReleaseSafe --prefix "zig-out/$ARCH-linux"
+zig build install lab-tools -Dtarget=$ARCH-linux -Doptimize=ReleaseSafe --prefix "zig-out/$ARCH-linux"
 docker run --rm --platform $PLATFORM --cap-add NET_ADMIN \
 	-v "$ROOT/zig-out/$ARCH-linux/bin:/zm:ro" -v "$ROOT/tests/lab:/lab:ro" \
-	alpine:3.20 sh -c 'apk add -q python3 iptables ip6tables iproute2-tc nmap binutils >/dev/null && sh /lab/connect_lab.sh'
+	alpine:3.20 sh -c 'apk add -q iptables ip6tables iproute2-tc nmap binutils jq >/dev/null && sh /lab/connect_lab.sh'
