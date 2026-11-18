@@ -1,0 +1,73 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (matching `version` in src/output/report.zig)
+# builds the static binaries, publishes them with SHA256SUMS as a GitHub
+# release, then installs that release with install.sh on Linux and macOS.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.1
+      - name: Tag matches the version in the code
+        run: |
+          v=$(sed -n 's/^pub const version = "\(.*\)";$/\1/p' src/output/report.zig)
+          z=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          if [ "v$v" != "$TAG" ] || [ "v$z" != "$TAG" ]; then
+            echo "tag $TAG, report.zig $v, build.zig.zon $z" >&2
+            exit 1
+          fi
+      - run: zig build test --summary all
+      - run: zig build release --summary all
+      - run: sh packaging/package.sh dist
+      - name: Packaged Linux binary runs and reports the tag's version
+        run: |
+          mkdir -p "$RUNNER_TEMP/x" && tar -xzf dist/zigmap-x86_64-linux.tar.gz -C "$RUNNER_TEMP/x"
+          "$RUNNER_TEMP/x/zigmap" --version | grep -F "zigmap ${TAG#v} "
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "Zigmap $TAG" --generate-notes
+
+  install:
+    name: install.sh (${{ matrix.os }})
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the release and run it
+        run: |
+          ZIGMAP_VERSION="$TAG" ZIGMAP_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          "$RUNNER_TEMP/bin/zigmap" --version | grep -F "zigmap ${TAG#v} "
+          "$RUNNER_TEMP/bin/zigmap" --dry-run -p 80 127.0.0.1 | grep -F "No packets were sent."
