@@ -10,6 +10,32 @@ explicitly, expansion is capped (`--max-targets`, default 4096), probes are
 capped at 1000 per second unless you pass `--max-rate` (0 removes the cap),
 and there is no Internet-wide mode, no spoofing and no privilege escalation.
 
+## Install
+
+Prebuilt static binaries for Linux and macOS on x86_64 and aarch64.
+
+Homebrew (macOS and Linux):
+
+```sh
+brew install mcaney006/zigmap/zigmap
+```
+
+Install script (needs `curl` or `wget`, and `sha256sum` or `shasum`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mcaney006/ZigMap/main/install.sh | sh
+```
+
+The script picks the release asset for your OS and CPU, checks it against
+the release's `SHA256SUMS`, and installs `zigmap` to `/usr/local/bin` if
+you can write there, otherwise to `~/.local/bin`. It never runs `sudo`.
+`ZIGMAP_VERSION=v0.2.0` pins a release and `ZIGMAP_INSTALL_DIR=...` picks
+the directory. The binaries are also on the
+[releases page](https://github.com/mcaney006/ZigMap/releases).
+
+`-sT` needs no privileges. `-sS` and `-sU` run on Linux only and need root
+or `CAP_NET_RAW`.
+
 ## Features
 
 | Area | What it does |
