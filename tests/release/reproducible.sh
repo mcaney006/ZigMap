@@ -7,7 +7,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-if command -v sha256sum >/dev/null 2>&1; then h() { sha256sum "$1" | cut -d" " -f1; }; else h() { shasum -a 256 "$1" | cut -d" " -f1; }; fi
+if command -v sha256sum >/dev/null 2>&1; then H="sha256sum"; elif command -v shasum >/dev/null 2>&1; then H="shasum -a 256"; else echo "no SHA-256 utility found" >&2; exit 1; fi
+h() { s=$($H "$1") || return 1; printf '%s\n' "$s" | cut -d" " -f1; }
 for n in 1 2; do
 	rm -rf "$WORK/cache" "$WORK/gcache" "$WORK/out"
 	ZIG_LOCAL_CACHE_DIR="$WORK/cache" ZIG_GLOBAL_CACHE_DIR="$WORK/gcache" \

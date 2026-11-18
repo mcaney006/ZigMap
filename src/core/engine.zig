@@ -12,6 +12,7 @@
 //!   fn send(*T, slot: u32, gen: u32, addr: Addr, port: u16) SendOutcome
 //!   fn poll(*T, timeout_ns: u64, out: []Event) usize  waits at most timeout
 //!   fn cancel(*T, slot: u32) void                     drop transport state
+//!   fn pending(*T) usize   (optional)                captured replies not yet polled
 //!
 //! Classification lives in the transport-specific `classify` callback in
 //! `Config`, because the meaning of a reply depends on the scan method.
@@ -208,6 +209,15 @@ pub fn Engine(comptime T: type) type {
                 if (if (e.external_cancel) |f| f.load(.monotonic) else false) {
                     e.cancelAll(now, .canceled);
                     break;
+                }
+                // Replies the transport already captured beat any timer that
+                // has expired since: deliver them before timing probes out.
+                if (@hasDecl(T, "pending")) {
+                    var rounds: u32 = 0;
+                    while (e.transport.pending() > 0 and rounds < 32) : (rounds += 1) {
+                        const n = e.transport.poll(0, &events);
+                        for (events[0..n]) |ev| e.onReply(ev);
+                    }
                 }
                 while (e.timers.popExpired(now)) |t| e.onTimeout(t.id, now);
                 e.checkHostTimeouts(now);

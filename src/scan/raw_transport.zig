@@ -482,6 +482,11 @@ pub const RawTransport = struct {
         return t.n_events;
     }
 
+    /// Replies captured but not yet handed to the engine.
+    pub fn pending(t: *const RawTransport) usize {
+        return t.n_backlog;
+    }
+
     /// Nothing to release: the correlator slot stays "used" so late
     /// replies are still recognised as stale.
     pub fn cancel(_: *RawTransport, _: u32) void {}
