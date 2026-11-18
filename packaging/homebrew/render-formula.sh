@@ -6,7 +6,6 @@
 set -eu
 TAG=${1:?usage: render-formula.sh TAG [SHA256SUMS]}
 case $TAG in v*) ;; *) TAG="v$TAG" ;; esac
-VERSION=${TAG#v}
 BASE="https://github.com/mcaney006/ZigMap/releases/download/$TAG"
 if [ $# -ge 2 ]; then
 	SUMS=$(cat "$2")
@@ -31,7 +30,6 @@ cat <<EOF
 class Zigmap < Formula
   desc "Network scanner written in Zig, without libpcap"
   homepage "https://github.com/mcaney006/ZigMap"
-  version "$VERSION"
 
   on_macos do
     on_arm do
